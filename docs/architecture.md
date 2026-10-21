@@ -66,8 +66,8 @@ from core.template_parser import parse_template
 ### 方式二：sys.path 插入
 
 ```python
-import sys
-sys.path.insert(0, r"D:\DobaoWork_Project\omotion")
+import sys, os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "motion-core"))
 from core.renderer import RenderPipeline
 ```
 

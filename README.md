@@ -32,12 +32,12 @@ O.motion Core 是面向 `.motion` 开放动画模板格式的 Python 共享核�
 ## 安装
 
 ```bash
-# 开发模式安装
-pip install -e D:\DobaoWork_Project\omotion
+# 在仓库根目录执行开发模式安装
+pip install -e .
 
-# 或在项目中引用
-import sys
-sys.path.insert(0, r"D:\DobaoWork_Project\omotion")
+# 或在项目中引用（使用相对路径）
+import sys, os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "motion-core"))
 ```
 
 ## 快速开始

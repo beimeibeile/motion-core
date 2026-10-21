@@ -98,8 +98,8 @@ capabilities:
 ### 方式一：直接 import（O.motion / AI Editor）
 
 ```python
-import sys
-sys.path.insert(0, r"D:\DobaoWork_Project\omotion")
+import sys, os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "motion-core"))
 
 from core.template_parser import parse_template
 from core.renderer import RenderPipeline

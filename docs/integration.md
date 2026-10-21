@@ -27,7 +27,7 @@ omotion-core 作为 `.motion` 领域的共享能力底座，同时服务三个�
 
 ## 一、AI Editor 集成
 
-**项目路径**：`D:\DobaoWork_Project\AI Editor`
+**项目路径**：AI Editor 项目根目录
 **架构特点**：总指挥/协调层，通过 SKILL.md 路由到 Driver Skill，不直接调用工具。
 
 ### 集成方式：SKILL.md 路由 + 直接调用
@@ -51,8 +51,8 @@ AI Editor 的 adu-driver 目前是完整的 Driver Skill（SKILL.md + 脚本）�
 
 ```python
 # AI Editor 项目中，agent 按 adu-driver SKILL.md 指引操作
-import sys
-sys.path.insert(0, r"D:\DobaoWork_Project\omotion")
+import sys, os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "motion-core"))
 
 from core.renderer import RenderPipeline
 from core.quality_gate import QualityGate
@@ -87,12 +87,13 @@ omotion-core 的 `SKILL.md` 已包含 `metadata.capabilities` 声明，ai-video-
 
 ```powershell
 # 方式一：创建符号链接（推荐，代码实时同步）
+# 将 <motion_core_root> 替换为 motion-core 仓库的实际路径
 New-Item -ItemType SymbolicLink `
-  -Path "C:\Users\Administrator\AppData\Local\DoubaoWork\User Data\Default\.doubaowork\agent_mode\workspace\.user_skills\omotion-core" `
-  -Target "D:\DobaoWork_Project\omotion"
+  -Path "<user_skills_dir>\omotion-core" `
+  -Target "<motion_core_root>"
 
 # 方式二：复制目录（不推荐，更新需手动同步）
-# Copy-Item -Recurse "D:\DobaoWork_Project\omotion" "...\.user_skills\omotion-core"
+# Copy-Item -Recurse "<motion_core_root>" "<user_skills_dir>\omotion-core"
 ```
 
 ### 调用示例
@@ -148,16 +149,16 @@ omotion-core 不可用时（如未安装、依赖缺失），ai-video-editor 自
 
 ---
 
-## 三、O.motion 集成
+## 三、O_Motion 集成
 
-**项目路径**：`D:\DobaoWork_Project\O.motion`
+**项目路径**：O_Motion 项目根目录
 **架构特点**：.motion 专精应用，直接使用核心库，叠加模板创作工具链和批量产出调度。
 
 ### 集成方式：直接 import
 
 ```python
-import sys
-sys.path.insert(0, r"D:\DobaoWork_Project\omotion")
+import sys, os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "motion-core"))
 
 # 直接使用各模块
 from core.template_parser import parse_template
