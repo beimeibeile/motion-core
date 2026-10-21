@@ -37,7 +37,7 @@ pip install -e .
 
 # 或在项目中引用（使用相对路径）
 import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "motion-core"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "Motion-Core"))
 ```
 
 ## 快速开始
@@ -94,7 +94,7 @@ result = registry.invoke("motion_template_render", {
 ## 项目结构
 
 ```
-omotion/
+Motion-Core/
 ├── SKILL.md                  # 能力声明 + 使用手册（能力注册中心自动发现）
 ├── core/
 │   ├── __init__.py

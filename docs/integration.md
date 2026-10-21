@@ -52,7 +52,7 @@ AI Editor 的 adu-driver 目前是完整的 Driver Skill（SKILL.md + 脚本）�
 ```python
 # AI Editor 项目中，agent 按 adu-driver SKILL.md 指引操作
 import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "motion-core"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "Motion-Core"))
 
 from core.renderer import RenderPipeline
 from core.quality_gate import QualityGate
@@ -158,7 +158,7 @@ omotion-core 不可用时（如未安装、依赖缺失），ai-video-editor 自
 
 ```python
 import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "motion-core"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "Motion-Core"))
 
 # 直接使用各模块
 from core.template_parser import parse_template

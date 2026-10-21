@@ -56,7 +56,7 @@ utils → 所有模块
 ### 方式一：pip install -e（推荐）
 
 ```bash
-# 在 omotion 核心库目录
+# 在 Motion-Core 核心库目录
 pip install -e .
 
 # 在任意项目中
@@ -67,13 +67,13 @@ from core.template_parser import parse_template
 
 ```python
 import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "motion-core"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "Motion-Core"))
 from core.renderer import RenderPipeline
 ```
 
 ### 方式三：Git submodule
 
-将 omotion 作为子模块嵌入各项目。
+将 Motion-Core 作为子模块嵌入各项目。
 
 ## 版本兼容策略
 

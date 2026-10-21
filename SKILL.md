@@ -4,7 +4,7 @@ description: ".motion 格式共享核心库 —— 模板解析、HTML Canvas �
 version: 0.1.0
 author: O.motion Project
 license: MIT
-repository: https://github.com/beimeibeile/omotion
+repository: https://github.com/beimeibeile/motion-core
 capabilities:
   - name: motion_template_parse
     description: "解析 .motion 模板文件，支持 standard（明文）和 personal-download-v1（AES-256-GCM 加密）两种格式，输出模板元数据、场景列表、素材槽位、参数 schema"
@@ -99,7 +99,7 @@ capabilities:
 
 ```python
 import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "motion-core"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "Motion-Core"))
 
 from core.template_parser import parse_template
 from core.renderer import RenderPipeline
@@ -154,7 +154,7 @@ report = invoke("motion_quality_check",
 ## 项目结构
 
 ```
-omotion/
+Motion-Core/
 ├── SKILL.md              # 本文件（能力声明 + 使用手册）
 ├── core/
 │   ├── invoke.py         # 统一调用入口（能力注册中心兼容）
