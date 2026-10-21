@@ -7,6 +7,7 @@ Modules:
     quality_gate: Four-layer quality inspection (static/params/render/output)
     param_manager: JSON Schema parameter parsing and preset management
     fragment_manager: Reusable animation fragment library and composition
+    invoke: Unified capability entry point (compatible with ai-video-editor registry)
     utils: Configuration, logging, filesystem utilities
 """
 
@@ -17,5 +18,6 @@ __all__ = [
     "quality_gate",
     "param_manager",
     "fragment_manager",
+    "invoke",
     "utils",
 ]
