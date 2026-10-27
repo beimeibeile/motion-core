@@ -1,5 +1,7 @@
 """Fragment library - store, search, and manage reusable animation fragments."""
 
+from __future__ import annotations
+
 
 class FragmentLibrary:
     """Library of reusable animation fragments."""

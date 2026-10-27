@@ -1,5 +1,7 @@
 """Fragment combiner - compose multiple fragments into a new template."""
 
+from __future__ import annotations
+
 
 class FragmentCombiner:
     """Combine fragments on a timeline to create a new template."""
