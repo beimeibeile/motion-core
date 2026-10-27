@@ -74,7 +74,11 @@ class ParamSchema:
         return errors
 
     def _basic_validate(self, params: dict) -> list[str]:
-        """Basic validation when jsonschema is not available."""
+        """Basic validation when jsonschema is not available.
+
+        覆盖：必填、类型、enum、const、minimum/maximum、maxLength/minLength、
+        minItems/maxItems、additionalProperties。
+        """
         errors = []
         required = self.schema.get("required", [])
         properties = self.schema.get("properties", {})
@@ -87,6 +91,8 @@ class ParamSchema:
             if key in properties:
                 prop = properties[key]
                 expected_type = prop.get("type")
+
+                # 类型检查
                 if expected_type == "string" and not isinstance(value, str):
                     errors.append(f"{key}: 期望 string，实际 {type(value).__name__}")
                 elif expected_type == "integer" and not isinstance(value, int):
@@ -97,6 +103,41 @@ class ParamSchema:
                     errors.append(f"{key}: 期望 array，实际 {type(value).__name__}")
                 elif expected_type == "object" and not isinstance(value, dict):
                     errors.append(f"{key}: 期望 object，实际 {type(value).__name__}")
+
+                # const 检查
+                if "const" in prop and value != prop["const"]:
+                    errors.append(f"{key}: 必须等于固定值 {prop['const']}")
+
+                # enum 检查
+                if "enum" in prop and value not in prop["enum"]:
+                    errors.append(f"{key}: 不在允许的枚举值中: {prop['enum']}")
+
+                # 数值范围
+                if isinstance(value, (int, float)):
+                    if "minimum" in prop and value < prop["minimum"]:
+                        errors.append(f"{key}: {value} 小于最小值 {prop['minimum']}")
+                    if "maximum" in prop and value > prop["maximum"]:
+                        errors.append(f"{key}: {value} 大于最大值 {prop['maximum']}")
+
+                # 字符串长度
+                if isinstance(value, str):
+                    if "maxLength" in prop and len(value) > prop["maxLength"]:
+                        errors.append(f"{key}: 长度 {len(value)} 超过上限 {prop['maxLength']}")
+                    if "minLength" in prop and len(value) < prop["minLength"]:
+                        errors.append(f"{key}: 长度 {len(value)} 小于下限 {prop['minLength']}")
+
+                # 数组长度
+                if isinstance(value, list):
+                    if "minItems" in prop and len(value) < prop["minItems"]:
+                        errors.append(f"{key}: 元素数 {len(value)} 小于下限 {prop['minItems']}")
+                    if "maxItems" in prop and len(value) > prop["maxItems"]:
+                        errors.append(f"{key}: 元素数 {len(value)} 超过上限 {prop['maxItems']}")
+
+        # additionalProperties 检查（未知字段）
+        if self.schema.get("additionalProperties") is False:
+            for key in params:
+                if key not in properties:
+                    errors.append(f"未知字段: {key}（additionalProperties=false）")
 
         return errors
 
