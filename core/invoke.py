@@ -422,3 +422,24 @@ def _handle_template_select(template_dir: str, topic: Optional[str] = None,
                      "reasons": p.reasons, "recommend": p.recommend}
                     for p in matches],
     }
+
+
+@_register("producer_batch_report")
+def _handle_batch_report(tasks_file: str = "tasks.json",
+                         template_dir: Optional[str] = None,
+                         output_dir: Optional[str] = None,
+                         **kwargs) -> Dict[str, Any]:
+    """批量质量报告（Phase 3 I5）：聚合渲染结果 + 异常分类 + 重试策略。
+
+    Args:
+        tasks_file: 任务文件 JSON 路径
+        template_dir / output_dir: 与任务管理一致的上下文（透传）
+
+    Returns:
+        完整质量报告（summary/stage_breakdown/error_types/retry_strategy/tasks）
+    """
+    from core.producer import TaskManager, build_report
+    mgr = TaskManager(tasks_file=tasks_file, template_dir=template_dir,
+                      output_dir=output_dir)
+    report = build_report(mgr)
+    return {"report": report.to_dict()}

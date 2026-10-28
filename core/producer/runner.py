@@ -127,6 +127,8 @@ class ProducerRunner:
             task.attempts = result.attempts
             task.meta["elapsed_s"] = result.elapsed_s
             task.meta["output"] = result.output_path
+            if not result.success:
+                task.meta["stage"] = result.error_stage
             if result.success:
                 summary.succeeded += 1
             else:

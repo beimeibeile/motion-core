@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Tests for core.producer (Phase 3 I1/I2/I3/I4)."""
+"""Tests for core.producer (Phase 3 I1-I5)."""
 import json
 from pathlib import Path
 
@@ -13,6 +13,7 @@ from core.producer import (
     fill,
     collect_row_vars,
     TemplateIndex,
+    build_report,
     STATUS_READY,
     STATUS_DONE,
     STATUS_FAILED,
@@ -455,3 +456,66 @@ class TestTemplateIndex:
         assert res["matches"][0]["score"] > 0
         assert any("主题词命中" in r
                    for m in res["matches"] for r in m["reasons"])
+
+
+class TestBatchReport:
+    """I5 批量质量报告。"""
+
+    @pytest.fixture
+    def mixed_manager(self, manager):
+        from conftest import standard_params
+        base = standard_params()
+        # done ×2
+        t1 = manager.add("test_standard", base, output="a.mp4")
+        manager.update(t1.id, status=STATUS_DONE, meta={"elapsed_s": 3.5})
+        t2 = manager.add("test_standard", base, output="b.mp4")
+        manager.update(t2.id, status=STATUS_DONE, meta={"elapsed_s": 5.0})
+        # failed render（可重试）
+        t3 = manager.add("test_standard", base, output="c.mp4")
+        manager.update(t3.id, status=STATUS_FAILED, error="渲染失败: x",
+                       meta={"elapsed_s": 2.0, "stage": "render"})
+        # failed gate（不可重试）
+        t4 = manager.add("test_standard", base, output="d.mp4")
+        manager.update(t4.id, status=STATUS_FAILED, error="质量门 loudness 超标",
+                       meta={"stage": "gate"})
+        # skipped（模板缺失）
+        t5 = manager.add("不存在的模板", {}, output="e.mp4")
+        assert t5.status == STATUS_SKIPPED
+        return manager
+
+    def test_aggregate(self, mixed_manager):
+        r = build_report(mixed_manager)
+        assert r.total == 5
+        assert r.by_status["done"] == 2
+        assert r.by_status["failed"] == 2
+        assert r.by_status["skipped"] == 1
+        assert r.success_rate == 2 / 5
+        assert r.avg_elapsed_s == 4.25
+
+    def test_stage_breakdown(self, mixed_manager):
+        r = build_report(mixed_manager)
+        assert r.stage_breakdown.get("render") == 1
+        assert r.stage_breakdown.get("gate") == 1
+
+    def test_retry_strategy(self, mixed_manager):
+        r = build_report(mixed_manager)
+        assert len(r.retryable_ids) == 1  # render 可重试
+        assert len(r.blocked_ids) == 1    # gate 不可重试
+        assert r.error_types[0]["stage"] in ("render", "gate")
+
+    def test_empty_report(self, manager):
+        r = build_report(manager)
+        assert r.total == 0 and r.success_rate == 0.0
+        assert r.retryable_ids == [] and r.blocked_ids == []
+
+    def test_markdown(self, mixed_manager):
+        r = build_report(mixed_manager)
+        md = r.to_markdown()
+        assert "批量渲染质量报告" in md
+        assert "可重试" in md or "需人工处理" in md
+
+    def test_invoke_report(self, mixed_manager):
+        from core.invoke import invoke
+        res = invoke("producer_batch_report",
+                     tasks_file=str(mixed_manager.tasks_file))["result"]
+        assert res["report"]["summary"]["total"] == 5
