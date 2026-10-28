@@ -45,10 +45,12 @@ class RenderEngine:
         """Run a command and return (returncode, stdout, stderr).
 
         Uses UTF-8 decoding with error replacement to handle Windows GBK issues.
+        Default env includes UTF-8 flags + Chrome + ffmpeg PATH probing.
         """
         result = subprocess.run(
             cmd, cwd=str(cwd), capture_output=True,
-            timeout=timeout, shell=_SHELL, env=env
+            timeout=timeout, shell=_SHELL,
+            env=env if env is not None else self._build_env()
         )
         stdout = result.stdout.decode('utf-8', errors='replace') if result.stdout else ''
         stderr = result.stderr.decode('utf-8', errors='replace') if result.stderr else ''
@@ -56,7 +58,15 @@ class RenderEngine:
 
     @staticmethod
     def _build_env() -> dict:
-        """Build runtime environment: UTF-8 + system Chrome path."""
+        """Build runtime environment: UTF-8 + Chrome + ffmpeg PATH probing.
+
+        ffmpeg 探测顺序（仓库不存本机绝对路径）：
+          1. FFMPEG_BIN 环境变量（显式配置优先）
+          2. 当前 PATH 中已有 ffmpeg（shutil.which）
+          3. Windows 用户级 PATH（HKCU\\Environment，用户持久化后即时生效）
+          4. 常见安装根：ProgramFiles / ProgramFiles(x86) / LOCALAPPDATA /
+             USERPROFILE 下的 ffmpeg/bin（含 ffmpeg-master-latest-win64-gpl 变体）
+        """
         env = os.environ.copy()
         env["PYTHONUTF8"] = "1"
         env["PYTHONIOENCODING"] = "utf-8"
@@ -74,7 +84,53 @@ class RenderEngine:
             if Path(p).exists():
                 env["CHROME_PATH"] = p
                 break
+        # Find ffmpeg and inject its bin dir into PATH
+        ffmpeg_bin = os.environ.get("FFMPEG_BIN", "").strip()
+        if not ffmpeg_bin:
+            import shutil
+            in_path = shutil.which("ffmpeg")
+            if in_path:
+                ffmpeg_bin = os.path.dirname(in_path)
+        if not ffmpeg_bin:
+            ffmpeg_bin = RenderEngine._ffmpeg_from_user_path()
+        if not ffmpeg_bin:
+            for root_name in ("ProgramFiles", "ProgramFiles(x86)",
+                              "LOCALAPPDATA", "USERPROFILE"):
+                root = os.environ.get(root_name, "")
+                if not root:
+                    continue
+                for cand in (os.path.join(root, "ffmpeg", "bin"),
+                             os.path.join(root, "ffmpeg-master-latest-win64-gpl",
+                                          "bin")):
+                    if Path(cand).is_dir():
+                        ffmpeg_bin = cand
+                        break
+                if ffmpeg_bin:
+                    break
+        if ffmpeg_bin and Path(ffmpeg_bin).is_dir():
+            env["FFMPEG_BIN"] = ffmpeg_bin
+            env["PATH"] = ffmpeg_bin + os.pathsep + env.get("PATH", "")
         return env
+
+    @staticmethod
+    def _ffmpeg_from_user_path() -> str:
+        """Read Windows user-level PATH (HKCU\\Environment) for an ffmpeg bin dir.
+
+        Registry read is a runtime probe — the repo stores no machine paths.
+        """
+        if os.name != 'nt':
+            return ""
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
+                user_path, _ = winreg.QueryValueEx(key, "Path")
+        except Exception:
+            return ""
+        for seg in user_path.split(os.pathsep):
+            seg = seg.strip().strip('"')
+            if seg and os.path.isfile(os.path.join(seg, "ffmpeg.exe")):
+                return seg
+        return ""
 
     def _extract(self) -> Path:
         """Extract .motion template to instance_dir/template."""
