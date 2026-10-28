@@ -309,7 +309,7 @@ def _handle_producer_task(action: str, tasks_file: str = "tasks.json",
     批量生产任务管理（Phase 3 I1）
 
     Args:
-        action: import/list/add/update/remove/status/clear
+        action: import/list/add/update/remove/status/clear/run
         tasks_file: 任务文件 JSON 路径（默认 tasks.json）
         template_dir: 模板库目录（解析相对模板名）
         output_dir: 输出目录（解析相对输出路径）
@@ -387,3 +387,38 @@ def _handle_producer_task(action: str, tasks_file: str = "tasks.json",
     else:
         raise ValueError(f"Unknown action: {action}. "
                          f"Expected: import/list/add/update/remove/status/clear/run")
+
+
+@_register("producer_template_select")
+def _handle_template_select(template_dir: str, topic: Optional[str] = None,
+                            duration_s: Optional[float] = None,
+                            aspect: Optional[str] = None,
+                            voiceover: Optional[bool] = None,
+                            top: int = 3, **kwargs) -> Dict[str, Any]:
+    """智能模板选型（Phase 3 I4）：按内容特征自动匹配模板。
+
+    Args:
+        template_dir: 模板库目录（扫描 *.motion）
+        topic: 主题词（如 "新能源"）
+        duration_s: 目标时长（秒）
+        aspect: 画幅（横屏/竖屏）
+        voiceover: 是否需要口播
+        top: 返回前 N 个推荐（默认 3）
+
+    Returns:
+        匹配结果：匹配维度 + 按分数降序的模板推荐列表
+    """
+    from core.producer import TemplateIndex
+    index = TemplateIndex(template_dir)
+    matches = index.match(topic=topic, duration_s=duration_s,
+                          aspect=aspect, voiceover=voiceover, top=top)
+    return {
+        "query": {"topic": topic, "duration_s": duration_s,
+                  "aspect": aspect, "voiceover": voiceover},
+        "total_profiles": len(index.profiles),
+        "matches": [{"name": p.name, "score": p.score,
+                     "type": p.type, "aspect": p.aspect,
+                     "voiceover": p.voiceover, "duration_s": list(p.duration_s),
+                     "reasons": p.reasons, "recommend": p.recommend}
+                    for p in matches],
+    }

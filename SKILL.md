@@ -76,6 +76,11 @@ capabilities:
     skill: omotion-core
     entry_point: core.invoke.invoke
     dependencies: ["python_deps"]
+  - name: producer_template_select
+    description: "智能模板选型（Phase 3 I4）：按内容特征（主题词/时长/画幅/口播需求）自动匹配模板，输出按分数降序的推荐与命中理由"
+    skill: omotion-core
+    entry_point: core.invoke.invoke
+    dependencies: ["python_deps"]
     priority: 5
     version: ">=0.1.0"
     params:
@@ -111,6 +116,7 @@ capabilities:
 | `motion_param_manage` | 参数管理 | 7 | python |
 | `motion_fragment_manage` | 片段库管理 | 6 | python |
 | `producer_task_manage` | 批量生产任务管理（Phase 3） | 5 | python |
+| `producer_template_select` | 智能模板选型（Phase 3 I4） | 5 | python |
 
 ## 集成方式
 

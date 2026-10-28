@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
-"""Producer module: task list management for batch video production (Phase 3 I1-I3)."""
+"""Producer module: task list management for batch video production (Phase 3 I1-I4)."""
 from .param_fill import ParamFiller, substitute, fill, collect_row_vars
 from .runner import ProducerRunner, RunSummary
+from .template_index import TemplateIndex, TemplateProfile
 from .task_manager import (
     ProducerTask,
     TaskManager,
@@ -22,6 +23,8 @@ __all__ = [
     "substitute",
     "fill",
     "collect_row_vars",
+    "TemplateIndex",
+    "TemplateProfile",
     "STATUS_PENDING",
     "STATUS_READY",
     "STATUS_RUNNING",

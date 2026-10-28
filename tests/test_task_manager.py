@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Tests for core.producer (Phase 3 I1/I2/I3)."""
+"""Tests for core.producer (Phase 3 I1/I2/I3/I4)."""
 import json
 from pathlib import Path
 
@@ -12,6 +12,7 @@ from core.producer import (
     substitute,
     fill,
     collect_row_vars,
+    TemplateIndex,
     STATUS_READY,
     STATUS_DONE,
     STATUS_FAILED,
@@ -398,3 +399,59 @@ class TestProducerRunner:
         s = runner.run(retry_failed=True)
         assert s.failed == 1
         assert "模板不存在" in manager.get(t.id).error
+
+
+class TestTemplateIndex:
+    """I4 智能模板选型。"""
+
+    @pytest.fixture
+    def tdir(self, tmp_path):
+        d = tmp_path / "tpl"
+        d.mkdir()
+        for name in ["现代图文_口播讲解_横屏_v2.7.11.motion",
+                     "现代图文_口播讲解_竖屏_v2.7.11.motion",
+                     "酷炫科技风_口播讲解_横屏_v0.2.7.motion",
+                     "多屏拼贴_品牌宣传_横屏_v2.6.4.motion"]:
+            (d / name).write_bytes(b"x")
+        return str(d)
+
+    def test_scan_parses_filenames(self, tdir):
+        idx = TemplateIndex(tdir)
+        assert len(idx.profiles) == 4
+        p = next(x for x in idx.profiles if x.type == "现代图文"
+                 and x.aspect == "横屏")
+        assert p.purpose == "口播讲解" and p.voiceover is True
+        q = next(x for x in idx.profiles if x.purpose == "品牌宣传")
+        assert q.voiceover is False
+
+    def test_match_aspect_voiceover(self, tdir):
+        idx = TemplateIndex(tdir)
+        top = idx.match(aspect="竖屏", voiceover=True, top=2)
+        assert top[0].name.startswith("现代图文_口播讲解_竖屏")
+        assert top[0].score >= 4
+
+    def test_match_topic(self, tdir):
+        idx = TemplateIndex(tdir)
+        top = idx.match(topic="科技", aspect="横屏", voiceover=True)
+        assert top[0].name.startswith("酷炫科技风") or top[0].score >= 3
+
+    def test_match_duration_range(self, tdir):
+        idx = TemplateIndex(tdir)
+        # 30s 落入口播类范围 → 现代图文 15-90s 得分
+        top = idx.match(duration_s=30, voiceover=True, aspect="横屏")
+        assert top[0].name.startswith("现代图文")
+
+    def test_no_match_returns_empty(self, tdir):
+        idx = TemplateIndex(tdir)
+        # 主题词完全不相关 → 无任何维度命中 → 空推荐
+        assert idx.match(topic="完全无关的主题词xyz") == []
+
+    def test_invoke_select(self, tdir):
+        from core.invoke import invoke
+        r = invoke("producer_template_select", template_dir=tdir,
+                   topic="科技", aspect="横屏")
+        res = r["result"]
+        assert res["total_profiles"] == 4
+        assert res["matches"][0]["score"] > 0
+        assert any("主题词命中" in r
+                   for m in res["matches"] for r in m["reasons"])
