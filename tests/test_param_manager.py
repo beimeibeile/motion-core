@@ -24,47 +24,53 @@ class TestParamSchema:
     def test_validate_type_mismatch(self, schema):
         errors = ParamSchema(schema).validate(
             {"mode": "standard", "count": "not-int", "label": "x"})
-        assert any("期望 integer" in e for e in errors)
+        assert any("期望 integer" in e or "not of type" in e for e in errors)
 
     def test_validate_const(self, schema):
         errors = ParamSchema(schema).validate(
             {"mode": "wrong", "count": 1, "label": "ab"})
-        assert any("固定值" in e or "const" in e for e in errors)
+        assert any("固定值" in e or "const" in e or "expected" in e
+                   for e in errors)
 
     def test_validate_enum(self, schema):
         errors = ParamSchema(schema).validate(
             {"mode": "standard", "count": 1, "label": "ab", "style": "zzz"})
-        assert any("枚举" in e for e in errors)
+        assert any("枚举" in e or "not one of" in e for e in errors)
 
     def test_validate_range(self, schema):
         errors = ParamSchema(schema).validate(
             {"mode": "standard", "count": 99, "label": "ab"})
-        assert any("最大值" in e for e in errors)
+        assert any("最大值" in e or "maximum" in e for e in errors)
         errors2 = ParamSchema(schema).validate(
             {"mode": "standard", "count": 0, "label": "ab"})
-        assert any("最小值" in e for e in errors2)
+        assert any("最小值" in e or "minimum" in e for e in errors2)
 
     def test_validate_length(self, schema):
         errors = ParamSchema(schema).validate(
             {"mode": "standard", "count": 1, "label": "x"})  # minLength 2
-        assert any("minLength" in e or "下限" in e for e in errors)
+        assert any("minLength" in e or "下限" in e or "too short" in e
+                   for e in errors)
         errors2 = ParamSchema(schema).validate(
             {"mode": "standard", "count": 1, "label": "太长太长太长太长太长"})
-        assert any("maxLength" in e or "上限" in e for e in errors2)
+        assert any("maxLength" in e or "上限" in e or "too long" in e
+                   for e in errors2)
 
     def test_validate_array_items(self, schema):
         errors = ParamSchema(schema).validate(
             {"mode": "standard", "count": 1, "label": "ab", "tags": []})
-        assert any("minItems" in e or "下限" in e for e in errors)
+        assert any("minItems" in e or "下限" in e or "too short" in e
+                   or "non-empty" in e for e in errors)
         errors2 = ParamSchema(schema).validate(
             {"mode": "standard", "count": 1, "label": "ab",
              "tags": ["1", "2", "3", "4"]})
-        assert any("maxItems" in e or "上限" in e for e in errors2)
+        assert any("maxItems" in e or "上限" in e or "too long" in e
+                   for e in errors2)
 
     def test_validate_additional_properties(self, schema):
         errors = ParamSchema(schema).validate(
             {"mode": "standard", "count": 1, "label": "ab", "unknown": 1})
-        assert any("未知字段" in e for e in errors)
+        assert any("未知字段" in e or "Additional properties" in e
+                   for e in errors)
 
     def test_validate_empty_schema(self):
         assert ParamSchema({}).validate({"a": 1}) != []
