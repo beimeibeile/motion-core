@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Tests for core.producer.task_manager (Phase 3 I1)."""
+"""Tests for core.producer.task_manager (Phase 3 I1/I2)."""
 import json
 from pathlib import Path
 
@@ -7,6 +7,10 @@ import pytest
 
 from core.producer import (
     TaskManager,
+    ParamFiller,
+    substitute,
+    fill,
+    collect_row_vars,
     STATUS_READY,
     STATUS_SKIPPED,
     STATUS_PENDING,
@@ -189,3 +193,88 @@ class TestProducerInvoke:
         r2 = invoke("producer_task_manage", action="status",
                     tasks_file=tasks_file)
         assert r2["result"]["total"] == 0
+
+
+class TestParamFiller:
+    """I2 参数批量填充。"""
+
+    def test_substitute_basic(self):
+        assert substitute("你好 {{name}}", {"name": "世界"}) == "你好 世界"
+
+    def test_substitute_nested_path(self):
+        assert substitute("{{a.b}}", {"a": {"b": "深"}}) == "深"
+
+    def test_substitute_default(self):
+        assert substitute("{{x|默认}}", {}) == "默认"
+
+    def test_substitute_missing_keep(self):
+        assert substitute("{{missing}}", {}, keep_missing=True) == "{{missing}}"
+        assert substitute("{{missing}}", {}, keep_missing=False) == ""
+
+    def test_fill_recursive(self):
+        data = {"title": "{{t}}", "scenes": [{"id": "{{id}}"}],
+                "n": 5, "nested": {"k": "{{k|D}}"}}
+        out = fill(data, {"t": "标题", "id": "S1"})
+        assert out == {"title": "标题", "scenes": [{"id": "S1"}],
+                       "n": 5, "nested": {"k": "D"}}
+
+    def test_fill_task_params(self):
+        p = {"title": "{{t}}", "duration": 5}
+        out = ParamFiller({"t": "A"}).fill_task(p)
+        assert out == {"title": "A", "duration": 5}
+        assert p == {"title": "{{t}}", "duration": 5}  # 原对象不变
+
+    def test_collect_row_vars(self):
+        row = {"template": "t", "主题": "科技", "a.b": "c", "param.title": "x"}
+        assert collect_row_vars(row) == {"主题": "科技", "a": {"b": "c"}}
+
+
+class TestCsvVarSubstitution:
+    """I2 CSV 变量替换（{{列名}} 引用同行字段）。"""
+
+    def test_csv_row_vars(self, manager):
+        path = _write_csv(manager.tasks_file.parent / "tasks.csv", [
+            {"template": "test_standard", "name": "任务{{n}}",
+             "output": "{{主题}}.mp4", "param.mode": "standard",
+             "param.language": "zh", "param.layout": "landscape",
+             "param.title": "标题-{{主题}}", "param.duration": "{{时长}}",
+             "param.scenes": '[{"id":"S01","title":"{{主题}}"}]',
+             "主题": "科技", "时长": "6", "n": "3"},
+        ])
+        imported = manager.import_csv(str(path))
+        assert len(imported) == 1
+        t = imported[0]
+        assert t.name == "任务3"
+        assert t.output == "科技.mp4"
+        assert t.params["title"] == "标题-科技"
+        assert t.params["duration"] == 6
+        assert t.params["scenes"] == [{"id": "S01", "title": "科技"}]
+        assert t.status == STATUS_READY
+
+    def test_csv_global_vars_file(self, manager, tmp_path):
+        vars_file = tmp_path / "vars.json"
+        vars_file.write_text(json.dumps({"公司": "某某科技"}), encoding="utf-8")
+        path = _write_csv(manager.tasks_file.parent / "tasks.csv", [
+            {"template": "test_standard", "param.mode": "standard",
+             "param.language": "zh", "param.layout": "landscape",
+             "param.title": "{{公司}}宣传", "param.duration": "5",
+             "param.scenes": '[{"id":"S01","title":"{{公司}}"}]'},
+        ])
+        imported = manager.import_csv(str(path), vars_file=str(vars_file))
+        assert imported[0].params["title"] == "某某科技宣传"
+
+    def test_json_record_vars(self, manager):
+        from conftest import standard_params
+        base = standard_params()
+        path = manager.tasks_file.parent / "tasks.json.in"
+        path.write_text(json.dumps([
+            {"template": "test_standard", "params": {
+                **base, "title": "{{主题}}-{{n}}"},
+             "output": "{{n}}.mp4", "name": "批{{n}}",
+             "主题": "新能源", "n": "7"},
+        ], ensure_ascii=False), encoding="utf-8")
+        imported = manager.import_json(str(path))
+        t = imported[0]
+        assert t.params["title"] == "新能源-7"
+        assert t.name == "批7"
+        assert t.output == "7.mp4"

@@ -24,6 +24,8 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Optional
 
+from .param_fill import collect_row_vars, substitute, fill
+
 
 STATUS_PENDING = "pending"
 STATUS_READY = "ready"
@@ -179,7 +181,8 @@ class TaskManager:
         self.save()
         return task
 
-    def import_csv(self, path: str) -> list[ProducerTask]:
+    def import_csv(self, path: str, vars_file: Optional[str] = None
+                   ) -> list[ProducerTask]:
         """从 CSV 导入任务列表。
 
         列约定：
@@ -187,31 +190,34 @@ class TaskManager:
           name       任务名（可选）
           output     输出文件名/路径（可选；缺省用 <模板名>.mp4）
           param.<k>  模板参数列（展开为 params[k]，自动类型转换）
-          其他列      写入 meta
+          其他列      写入 meta，并作为 {{列名}} 变量供 param 值引用
         """
         text = Path(path).read_text(encoding="utf-8-sig")
         reader = csv.DictReader(io.StringIO(text))
         if "template" not in (reader.fieldnames or []):
             raise ValueError("CSV 缺少 template 列（首列应为模板名）")
+        global_vars = self._load_vars(vars_file)
         imported = []
         for row in reader:
             if not row.get("template"):
                 continue
             params, meta = {}, {}
+            row_vars = {**global_vars, **collect_row_vars(row)}
             for key, value in row.items():
                 if key in (None, "") or value is None:
                     continue
                 if key.startswith("param."):
-                    params[key[len("param."):]] = _coerce(value)
+                    filled = substitute(value, row_vars)
+                    params[key[len("param."):]] = _coerce(filled)
                 elif key in ("template", "name", "output"):
                     continue
                 else:
-                    meta[key] = _coerce(value)
+                    meta[key] = _coerce(substitute(value, row_vars))
             task = self.add(
                 template=row["template"],
                 params=params,
-                output=row.get("output", ""),
-                name=row.get("name", ""),
+                output=substitute(row.get("output", ""), row_vars),
+                name=substitute(row.get("name", ""), row_vars),
             )
             if meta:
                 task.meta.update(meta)
@@ -220,23 +226,45 @@ class TaskManager:
         self.save()
         return imported
 
-    def import_json(self, path: str) -> list[ProducerTask]:
-        """从 JSON 任务数组导入：[{template, params, output, name}, ...]。"""
+    def import_json(self, path: str, vars_file: Optional[str] = None
+                    ) -> list[ProducerTask]:
+        """从 JSON 任务数组导入：[{template, params, output, name}, ...]。
+
+        params 中 {{字段}} 引用记录顶层字段（同记录其他键）。
+        """
         data = json.loads(Path(path).read_text(encoding="utf-8"))
         if not isinstance(data, list):
             raise ValueError("JSON 任务文件必须是数组（[{template, params, ...}]）")
+        global_vars = self._load_vars(vars_file)
         imported = []
         for item in data:
             if not isinstance(item, dict) or not item.get("template"):
                 continue
+            params = item.get("params") or {}
+            row_vars = {**global_vars, **collect_row_vars(item)}
+            filled_params = fill(params, row_vars)
             task = self.add(
                 template=item["template"],
-                params=item.get("params") or {},
-                output=item.get("output", ""),
-                name=item.get("name", ""),
+                params=filled_params,
+                output=substitute(item.get("output", ""), row_vars),
+                name=substitute(item.get("name", ""), row_vars),
             )
             imported.append(task)
         return imported
+
+    @staticmethod
+    def _load_vars(vars_file: Optional[str]) -> dict:
+        """加载全局变量文件（JSON dict）；None 或缺失 → {}。"""
+        if not vars_file:
+            return {}
+        p = Path(vars_file)
+        if not p.exists():
+            return {}
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except (json.JSONDecodeError, OSError):
+            return {}
 
     def update(self, task_id: str, **fields) -> Optional[ProducerTask]:
         """更新任务字段（params/output/name/status/error 等）。"""

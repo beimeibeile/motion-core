@@ -333,10 +333,11 @@ def _handle_producer_task(action: str, tasks_file: str = "tasks.json",
         if not file:
             raise ValueError("import 需要 file 参数（CSV 或 JSON 路径）")
         path = Path(file)
+        vars_file = kwargs.get("vars_file")
         if path.suffix.lower() == ".csv":
-            imported = mgr.import_csv(str(path))
+            imported = mgr.import_csv(str(path), vars_file=vars_file)
         else:
-            imported = mgr.import_json(str(path))
+            imported = mgr.import_json(str(path), vars_file=vars_file)
         return {"imported": len(imported),
                 "summary": mgr.status_summary(),
                 "tasks": [t.to_dict() for t in imported]}
