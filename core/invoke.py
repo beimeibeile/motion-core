@@ -102,13 +102,33 @@ def _handle_parse(template_path: str, decrypt_key: Optional[str] = None, **kwarg
 
     Args:
         template_path: .motion 文件路径
-        decrypt_key: personal 格式解密密钥（可选）
+        decrypt_key: personal 格式解密密钥（兼容参数；加密内容由运行时解密，
+                     解析层不提取密钥，故当前忽略）
 
     Returns:
         模板元数据 dict
     """
     from core.template_parser import parse_template
-    return parse_template(template_path, decrypt_key=decrypt_key)
+    info = parse_template(template_path)
+    return {
+        "path": info.path,
+        "format": info.format,
+        "spec_version": info.spec_version,
+        "id": info.template_id,
+        "version": info.template_version,
+        "name": info.name,
+        "runtime_profile": info.runtime_profile,
+        "runtime_entry": info.runtime_entry,
+        "output": {"width": info.output_width, "height": info.output_height,
+                   "fps": info.output_fps},
+        "duration_policy": info.duration_policy,
+        "duration_seconds": info.duration_seconds,
+        "assets": info.assets,
+        "licenses": info.licenses,
+        "package_profile": getattr(info, "package_profile", None),
+        "runtime_generation": getattr(info, "runtime_generation", None),
+        "has_encrypted_content": getattr(info, "has_encrypted_content", None),
+    }
 
 
 @_register("motion_template_render")
@@ -151,19 +171,32 @@ def _handle_quality_check(template_path: str, params: Dict[str, Any] = None,
         template_path: .motion 文件路径
         params: 待校验参数
         output_path: 已渲染视频路径（成品检查时需要）
-        level: 检查级别 static/params/render/output/all
+        level: 检查级别 static/params/render/output/all（all 时包含全部可用层）
 
     Returns:
         质量报告 dict
     """
     from core.quality_gate import QualityGate
     gate = QualityGate()
-    return gate.check(
+    report = gate.check(
         template_path=template_path,
         params=params or {},
         output_path=output_path,
-        level=level
+        render_result=kwargs.get("render_result"),
+        expected=kwargs.get("expected"),
     )
+    # level 子集过滤（all 默认不过滤）
+    if level != "all":
+        allowed = {"static", "params", "render", "output"} & {level}
+        report.checks = [c for c in report.checks if c.stage in allowed]
+        # 重算整体状态
+        if any(c.status.value == "fail" for c in report.checks):
+            report.status = "fail"
+        elif any(c.status.value == "warn" for c in report.checks):
+            report.status = "warn"
+        else:
+            report.status = "pass"
+    return report.to_dict()
 
 
 @_register("motion_param_manage")
@@ -183,17 +216,30 @@ def _handle_param_manage(template_path: str, action: str,
     Returns:
         操作结果 dict
     """
-    from core.param_manager import ParamManager
-    mgr = ParamManager(template_path)
+    from core.param_manager.schema import ParamSchema
+    from core.param_manager.presets import PresetManager
+    from core.template_parser import parse_template
 
     if action == "get_schema":
-        return mgr.get_schema()
+        info = parse_template(template_path)
+        if not info.parameters_schema:
+            raise ValueError("模板无可提取参数 Schema（personal 加密格式）")
+        return info.parameters_schema
     elif action == "validate_params":
-        return mgr.validate(params or {})
-    elif action == "load_preset":
-        return mgr.load_preset(preset_name)
-    elif action == "save_preset":
-        return mgr.save_preset(preset_name, params or {})
+        info = parse_template(template_path)
+        ps = ParamSchema(info.parameters_schema or {})
+        errors = ps.validate(params or {})
+        return {"valid": not errors, "errors": errors}
+    elif action in ("load_preset", "save_preset"):
+        info = parse_template(template_path)
+        tid = info.template_id
+        mgr = PresetManager(kwargs.get("presets_dir", "presets"))
+        if action == "load_preset":
+            data = mgr.load(tid, preset_name or "")
+            if data is None:
+                raise ValueError(f"预设不存在: {preset_name}")
+            return data
+        return mgr.save(tid, preset_name or "default", params or {})
     else:
         raise ValueError(f"Unknown action: {action}. "
                          f"Expected: get_schema/validate_params/load_preset/save_preset")
@@ -208,27 +254,41 @@ def _handle_fragment_manage(action: str, template_path: Optional[str] = None,
     动画片段库管理
 
     Args:
-        action: extract/list/combine/match
+        action: extract/list/search/get/combine
         template_path: 源模板路径（extract 时必填）
-        fragment_id: 片段 ID
+        fragment_id: 片段 ID（get/combine 时必填）
         library_path: 片段库路径
 
     Returns:
         操作结果 dict
     """
-    from core.fragment_manager import FragmentLibrary
-    lib = FragmentLibrary(library_path)
+    lib_dir = library_path or "fragment_library"
 
     if action == "extract":
+        from core.fragment_manager.extractor import FragmentExtractor
         if not template_path:
             raise ValueError("template_path is required for extract action")
-        return lib.extract_from_template(template_path)
+        out = FragmentExtractor().extract(
+            template_path, (0, 0), lib_dir)
+        return {"fragment_dir": out}
     elif action == "list":
-        return lib.list_fragments()
+        from core.fragment_manager.library import FragmentLibrary
+        return {"fragments": FragmentLibrary(lib_dir).list(**kwargs)}
+    elif action == "search":
+        from core.fragment_manager.library import FragmentLibrary
+        query = kwargs.get("query", "")
+        return {"fragments": FragmentLibrary(lib_dir).search(query)}
+    elif action == "get":
+        from core.fragment_manager.library import FragmentLibrary
+        return {"fragment": FragmentLibrary(lib_dir).get(fragment_id)}
     elif action == "combine":
-        return lib.combine(fragment_id, **kwargs)
-    elif action == "match":
-        return lib.match(**kwargs)
+        from core.fragment_manager.combiner import FragmentCombiner
+        fragments = kwargs.get("fragments")
+        output = kwargs.get("output_path")
+        if not fragments or not output:
+            raise ValueError("combine 需要 fragments 列表与 output_path")
+        out = FragmentCombiner().combine(fragments, output)
+        return {"output_path": out}
     else:
         raise ValueError(f"Unknown action: {action}. "
-                         f"Expected: extract/list/combine/match")
+                         f"Expected: extract/list/search/get/combine")
