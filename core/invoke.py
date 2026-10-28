@@ -443,3 +443,27 @@ def _handle_batch_report(tasks_file: str = "tasks.json",
                       output_dir=output_dir)
     report = build_report(mgr)
     return {"report": report.to_dict()}
+
+
+@_register("producer_deliver")
+def _handle_producer_deliver(tasks_file: str = "tasks.json",
+                             template_dir: Optional[str] = None,
+                             output_dir: Optional[str] = None,
+                             out_root: Optional[str] = None,
+                             archive: bool = True,
+                             **kwargs) -> Dict[str, Any]:
+    """成品交付与归档（Phase 3 I6）：归档 done 成品 + 生成 manifest。
+
+    Args:
+        tasks_file / template_dir / output_dir: 任务上下文
+        out_root: 输出根目录（默认 manager.output_dir 或 03-渲染输出）
+        archive: 复制成品到 成品/{YYYYMMDD}/（默认 True；False 仅 manifest）
+
+    Returns:
+        交付结果（archived/missing/summary/manifest 路径）
+    """
+    from core.producer import TaskManager, deliver
+    mgr = TaskManager(tasks_file=tasks_file, template_dir=template_dir,
+                      output_dir=output_dir)
+    result = deliver(mgr, out_root=out_root, archive=archive)
+    return result.to_dict()

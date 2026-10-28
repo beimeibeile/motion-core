@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
-"""Producer module: task list management for batch video production (Phase 3 I1-I5)."""
+"""Producer module: task list management for batch video production (Phase 3 I1-I6)."""
+from .delivery import DeliverResult, deliver
 from .param_fill import ParamFiller, substitute, fill, collect_row_vars
 from .report import BatchQualityReport, build_report, RETRYABLE_STAGES
 from .runner import ProducerRunner, RunSummary
@@ -29,6 +30,8 @@ __all__ = [
     "BatchQualityReport",
     "build_report",
     "RETRYABLE_STAGES",
+    "DeliverResult",
+    "deliver",
     "STATUS_PENDING",
     "STATUS_READY",
     "STATUS_RUNNING",

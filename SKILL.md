@@ -86,6 +86,11 @@ capabilities:
     skill: omotion-core
     entry_point: core.invoke.invoke
     dependencies: ["python_deps"]
+  - name: producer_deliver
+    description: "成品交付与归档（Phase 3 I6）：归档 done 成品到 成品/{YYYYMMDD}/ + 生成 manifest.json（任务/模板/源参数/耗时/质量门/路径）"
+    skill: omotion-core
+    entry_point: core.invoke.invoke
+    dependencies: ["python_deps"]
     priority: 5
     version: ">=0.1.0"
     params:
@@ -123,6 +128,7 @@ capabilities:
 | `producer_task_manage` | 批量生产任务管理（Phase 3） | 5 | python |
 | `producer_template_select` | 智能模板选型（Phase 3 I4） | 5 | python |
 | `producer_batch_report` | 批量质量报告（Phase 3 I5） | 5 | python |
+| `producer_deliver` | 成品交付与归档（Phase 3 I6） | 5 | python |
 
 ## 集成方式
 

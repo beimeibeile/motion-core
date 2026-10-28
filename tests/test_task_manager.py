@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Tests for core.producer (Phase 3 I1-I5)."""
+"""Tests for core.producer (Phase 3 I1-I6)."""
 import json
 from pathlib import Path
 
@@ -14,6 +14,7 @@ from core.producer import (
     collect_row_vars,
     TemplateIndex,
     build_report,
+    deliver,
     STATUS_READY,
     STATUS_DONE,
     STATUS_FAILED,
@@ -519,3 +520,67 @@ class TestBatchReport:
         res = invoke("producer_batch_report",
                      tasks_file=str(mixed_manager.tasks_file))["result"]
         assert res["report"]["summary"]["total"] == 5
+
+
+class TestDeliver:
+    """I6 成品交付与归档。"""
+
+    @pytest.fixture
+    def done_manager(self, manager, tmp_path):
+        from conftest import standard_params
+        out = tmp_path / "out"
+        out.mkdir()
+        base = standard_params()
+        t1 = manager.add("test_standard", base,
+                         output=str(out / "成品A.mp4"))
+        manager.update(t1.id, status=STATUS_DONE, meta={"elapsed_s": 2.0})
+        (out / "成品A.mp4").write_bytes(b"video-A")
+        t2 = manager.add("test_standard", base,
+                         output=str(out / "成品B.mp4"))
+        manager.update(t2.id, status=STATUS_DONE)
+        (out / "成品B.mp4").write_bytes(b"video-B")
+        # failed 不参与归档
+        t3 = manager.add("test_standard", base, output=str(out / "bad.mp4"))
+        manager.update(t3.id, status=STATUS_FAILED)
+        return manager
+
+    def test_deliver_archives(self, done_manager, tmp_path):
+        arc = tmp_path / "arc"
+        r = deliver(done_manager, out_root=str(arc))
+        assert r.summary["done"] == 2
+        assert r.summary["archived"] == 2
+        assert r.summary["missing"] == 0
+        # 归档目录 成品/{YYYYMMDD}/ 含两个文件
+        day = list((arc / "成品").iterdir())[0]
+        names = sorted(p.name for p in day.iterdir())
+        assert names == ["成品A.mp4", "成品B.mp4"]
+        # manifest 存在且含源参数
+        m = json.loads((arc / "manifest.json").read_text(encoding="utf-8"))
+        assert m["summary"]["archived"] == 2
+        assert m["items"][0]["params"]["mode"] == "standard"
+        assert m["items"][0]["id"].startswith("test_standard")
+
+    def test_deliver_manifest_only(self, done_manager, tmp_path):
+        r = deliver(done_manager, out_root=str(tmp_path / "arc"),
+                    archive=False)
+        assert r.summary["archived"] == 0
+        assert r.summary["done"] == 2
+        assert (tmp_path / "arc" / "manifest.json").exists()
+
+    def test_deliver_missing_file(self, manager, tmp_path):
+        from conftest import standard_params
+        t = manager.add("test_standard", standard_params(),
+                        output=str(tmp_path / "no.mp4"))
+        manager.update(t.id, status=STATUS_DONE)
+        r = deliver(manager, out_root=str(tmp_path / "arc"))
+        assert r.summary["missing"] == 1
+        assert r.missing == [t.id]
+
+    def test_invoke_deliver(self, done_manager):
+        from core.invoke import invoke
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            res = invoke("producer_deliver",
+                         tasks_file=str(done_manager.tasks_file),
+                         out_root=d)["result"]
+            assert res["summary"]["archived"] == 2
