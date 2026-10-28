@@ -3,11 +3,13 @@
 Supports:
 - standard format: adapter.py (uv run) -> render.mjs -> mix.py
 - personal-download-v1 (v1 runtime): motion.mjs run --workflow motion-kit
-- personal-download-v1 (v2 runtime): split_root.py / canvas_split_root.py (NOT YET SUPPORTED - Windows symlink bug)
+- personal-download-v1 (v2 runtime): split_root.py / canvas_split_root.py
+  (auto-routed from assistant/BUILD.json profiles; E7-verified 2026-10-28)
 """
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -16,6 +18,9 @@ from pathlib import Path
 from typing import Callable, Optional
 
 _SHELL = os.name == 'nt'
+
+# v2 runtime marker in assistant/BUILD.json profiles
+V2_PROFILE_MARKER = 'split-root-v1'
 
 
 class RenderError(Exception):
@@ -180,35 +185,154 @@ class StandardRenderEngine(RenderEngine):
 
 
 class PersonalRenderEngine(RenderEngine):
-    """Render engine for personal-download-v1 .motion templates (v1 runtime).
+    """Render engine for personal-download-v1 .motion templates.
 
-    Pipeline: motion.mjs run --workflow motion-kit
+    Accepts a .motion zip archive OR an unpacked template directory.
+    Pipeline (v1 runtime): motion.mjs run --workflow motion-kit
       doctor -> setup -> check-params -> plan -> prepare -> preview -> render
+    Pipeline (v2 runtime): motion.mjs run (auto-route, no --workflow)
+      setup -> check-params -> plan -> prepare(@vault) -> preview -> render
 
-    NOTE: Only supports v1 runtime (motion.mjs + --workflow).
-    v2 runtime (split_root.py / canvas_split_root.py) is NOT supported yet
-    due to Windows symlink bug [WinError 183].
+    Runtime generation is auto-detected from assistant/BUILD.json profiles
+    ('split-root-v1' => v2) with fallback to template_parser detection.
     """
+
+    def _extract(self) -> Path:
+        """Extract .motion template (zip OR directory) to instance_dir/template."""
+        extract_dir = self.instance_dir / "template"
+        if extract_dir.exists():
+            shutil.rmtree(extract_dir)
+        extract_dir.mkdir(parents=True, exist_ok=True)
+        if self.template_path.is_dir():
+            shutil.copytree(self.template_path, extract_dir, dirs_exist_ok=True)
+        else:
+            with zipfile.ZipFile(self.template_path, 'r') as z:
+                z.extractall(extract_dir)
+        self.extracted_dir = extract_dir
+        return extract_dir
 
     def __init__(self, template_path: str, instance_dir: str):
         super().__init__(template_path, instance_dir)
         self._motion_mjs: Optional[Path] = None
         self._assistant_dir: Optional[Path] = None
+        self.runtime_generation: str = 'v1'
+        self._v2_kind: Optional[str] = None  # 'split-root' | 'canvas-split-root' | None
+        self.core_dir: Optional[Path] = None  # captured decrypted locale core (v2)
 
     def prepare(self) -> None:
         self._extract()
         self._assistant_dir = self.extracted_dir / "assistant"
         self._motion_mjs = self._assistant_dir / "motion.mjs"
         if not self._motion_mjs.exists():
-            raise RenderError("env", "缺少 assistant/motion.mjs")
-        # CRITICAL: Patch motion.mjs to pass all env vars to child processes
+            raise RenderError("env", "缺少 assistant/motion.mjs")        # CRITICAL: Patch motion.mjs to pass all env vars to child processes
         # (otherwise PYTHONUTF8/CHROME_PATH are lost, causing GBK decode errors)
         self._patch_motion_mjs(self._motion_mjs)
+        # Detect v1/v2 runtime generation from assistant/BUILD.json
+        self._detect_runtime()
         # Prepare instance dir structure
         self.instance_dir.mkdir(parents=True, exist_ok=True)
         (self.instance_dir / "inputs").mkdir(exist_ok=True)
         # Write motiongit-source.json (required by motion.mjs)
         self._write_source_metadata()
+
+    def _detect_runtime(self) -> None:
+        """Detect v1/v2 runtime from assistant/BUILD.json profiles.
+
+        Primary: BUILD.json `profiles` contains 'split-root-v1' => v2.
+        Fallback: motion.mjs content contains split_root/canvas_split_root => v2.
+        """
+        build_file = self._assistant_dir / "BUILD.json"
+        if build_file.exists():
+            try:
+                data = json.loads(build_file.read_text(encoding="utf-8", errors="replace"))
+                profiles = data.get("profiles") or []
+                if V2_PROFILE_MARKER in profiles:
+                    self.runtime_generation = 'v2'
+                    # Distinguish canvas (native-frame) vs split-root (narration)
+                    # adapter may live in extracted/adapter OR inside locale core
+                    self._v2_kind = self._detect_v2_kind()
+                    return
+            except Exception:
+                pass
+        # Fallback: probe motion.mjs content
+        try:
+            content = self._motion_mjs.read_text(encoding="utf-8", errors="replace")[:50000]
+            if 'canvas_split_root' in content:
+                self.runtime_generation = 'v2'
+                self._v2_kind = 'canvas-split-root'
+            elif 'split_root' in content:
+                self.runtime_generation = 'v2'
+                self._v2_kind = 'split-root'
+        except Exception:
+            pass
+
+    def _capture_v2_core(self) -> Optional[Path]:
+        """Copy the decrypted locale core from Temp into instance/core.
+
+        v2 templates keep contracts (params.schema.json, copy-contract.json,
+        native-config.json) and adapters inside an encrypted bundle; motion.mjs
+        decrypts it to a Temp dir (motiongit-locale-core-*) during a *fresh*
+        setup. When dependency cache is warm the core may be absent from Temp;
+        callers should clean dependency cache before setup to force capture.
+        """
+        import tempfile
+        temp_dir = Path(tempfile.gettempdir())
+        candidates = sorted(
+            (d for d in temp_dir.glob('motiongit-locale-core-*') if d.is_dir()),
+            key=lambda d: d.stat().st_mtime, reverse=True,
+        )
+        if not candidates:
+            return None
+        src = candidates[0]
+        core_out = self.instance_dir / 'core'
+        if core_out.exists():
+            shutil.rmtree(core_out)
+        # prefer locale subdir (zh/en) which holds the contracts
+        locale_src = None
+        for loc in ('zh', 'en'):
+            cand = src / loc
+            if cand.is_dir():
+                locale_src = cand
+                break
+        shutil.copytree(locale_src or src, core_out)
+        self.core_dir = core_out
+        # Refine kind from captured core: native-config.json => canvas
+        try:
+            if (core_out / 'native-config.json').exists():
+                cfg = json.loads((core_out / 'native-config.json')
+                                 .read_text(encoding='utf-8', errors='replace'))
+                if cfg.get('kind') == 'native-frame':
+                    self._v2_kind = 'canvas-split-root'
+            elif any(core_out.rglob('canvas_split_root.py')):
+                self._v2_kind = 'canvas-split-root'
+        except Exception:
+            pass
+        return core_out
+
+    def _detect_v2_kind(self) -> Optional[str]:
+        """Distinguish canvas (native-frame) vs split-root (narration).
+
+        Adapter scripts live inside the ENCRYPTED content bundle, so probe
+        motion.mjs for the helper names it dispatches to.
+        """
+        try:
+            content = self._motion_mjs.read_text(encoding="utf-8", errors="replace")[:80000]
+            if 'canvas_split_root' in content:
+                return 'canvas-split-root'
+            if 'split_root' in content:
+                return 'split-root'
+        except Exception:
+            pass
+        # fallback: any visible adapter script under extracted tree
+        for rel in ('adapter/canvas_split_root.py', 'adapter/split_root.py'):
+            direct = self.extracted_dir / rel
+            if direct.exists():
+                return 'canvas-split-root' if 'canvas' in rel else 'split-root'
+        for p in self.extracted_dir.rglob('canvas_split_root.py'):
+            return 'canvas-split-root'
+        for p in self.extracted_dir.rglob('split_root.py'):
+            return 'split-root'
+        return 'split-root'  # default for split-root-v1 profiles
 
     @staticmethod
     def _patch_motion_mjs(mjs_path: Path) -> bool:
@@ -345,6 +469,15 @@ class PersonalRenderEngine(RenderEngine):
         if not self.extracted_dir:
             self.prepare()
 
+        if self.runtime_generation == 'v2':
+            return self._render_v2(params, output_path, progress_cb)
+        return self._render_v1(params, output_path, progress_cb)
+
+    # ------------------------------------------------------------------
+    # v1 runtime: motion.mjs run --workflow motion-kit
+    # ------------------------------------------------------------------
+    def _render_v1(self, params: dict, output_path: str,
+                   progress_cb: Callable = None) -> dict:
         t0 = time.time()
         out_path = Path(output_path).resolve()
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -374,10 +507,6 @@ class PersonalRenderEngine(RenderEngine):
                 # "Dependency cache exists" means deps are already installed - skip
                 if 'Dependency cache exists' in err or 'Dependency cache exists' in out:
                     pass  # Dependencies already installed, proceed
-                elif 'unrecognized arguments' in err or 'split_root' in err:
-                    raise RenderError("env",
-                        "该模板使用新版运行时(v2)，当前引擎暂不支持（Windows符号链接bug）",
-                        err[-300:])
                 else:
                     raise RenderError("env", "setup 失败", (err + out)[-500:])
 
@@ -450,5 +579,114 @@ class PersonalRenderEngine(RenderEngine):
             'elapsed_s': round(elapsed, 1),
             'format': 'personal-download-v1',
             'runtime_generation': 'v1',
+            'project_dir': str(project_dir),
+        }
+
+    # ------------------------------------------------------------------
+    # v2 runtime: motion.mjs run (auto-route) - split_root / canvas_split_root
+    # E7-verified sequence (2026-10-28):
+    #   setup(no --workflow) -> check-params -> plan -> prepare(@vault)
+    #   -> preview -> render(no --workers)
+    # ------------------------------------------------------------------
+    def _render_v2(self, params: dict, output_path: str,
+                   progress_cb: Callable = None) -> dict:
+        t0 = time.time()
+        out_path = Path(output_path).resolve()
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Write params
+        params_file = self.instance_dir / "params.json"
+        params_file.write_text(json.dumps(params, ensure_ascii=False), encoding='utf-8')
+        inputs_dir = self.instance_dir / "inputs"
+        inputs_dir.mkdir(exist_ok=True)
+
+        # 1. setup - v2 auto-routes; --workflow/--cache are REJECTED
+        if progress_cb:
+            progress_cb("env", 10, "安装依赖(v2)...")
+        self._clean_dependency_cache()
+        code, out, err = self._run_motion('setup', [], timeout=300)
+        if code != 0:
+            if 'Dependency cache exists' in err or 'Dependency cache exists' in out:
+                pass  # already installed
+            else:
+                raise RenderError("env", "setup(v2) 失败", (err + out)[-500:])
+        # Capture decrypted locale core (contracts/adapter) to instance/core
+        self._capture_v2_core()
+
+        # 2. check-params - same CLI shape as v1
+        if progress_cb:
+            progress_cb("plan", 20, "验证参数...")
+        code, out, err = self._run_motion('check-params',
+            [str(params_file), '--inputs', str(inputs_dir)], timeout=60)
+        if code != 0:
+            raise RenderError("plan", "参数验证失败(v2)", (err + out)[-600:])
+
+        # 3. plan
+        if progress_cb:
+            progress_cb("plan", 30, "生成制作计划...")
+        plan_dir = self.instance_dir / "plan"
+        if plan_dir.exists():
+            shutil.rmtree(plan_dir)
+        code, out, err = self._run_motion('plan',
+            [str(params_file), '--inputs', str(inputs_dir), '--out', str(plan_dir)],
+            timeout=180)
+        if code != 0:
+            raise RenderError("plan", "plan 失败(v2)", (err + out)[-800:])
+        self._mark_plan_reviewed(plan_dir)
+
+        # 4. prepare - canvas consumes plan vault via '@vault'; split-root
+        #    consumes raw params + --inputs (E7-verified CLI shapes)
+        if progress_cb:
+            progress_cb("prepare", 45, "构建渲染项目...")
+        project_dir = self.instance_dir / "project"
+        if project_dir.exists():
+            shutil.rmtree(project_dir)
+        if self._v2_kind == 'canvas-split-root':
+            prepare_args = ['@vault', '--plan', str(plan_dir), '--out', str(project_dir)]
+        else:
+            prepare_args = [str(params_file), '--inputs', str(inputs_dir),
+                            '--plan', str(plan_dir), '--out', str(project_dir)]
+        code, out, err = self._run_motion('prepare', prepare_args, timeout=240)
+        if code != 0:
+            raise RenderError("prepare", "prepare 失败(v2)", (err + out)[-800:])
+        self._mark_owner_effects_accepted(project_dir)
+
+        # 5. preview
+        if progress_cb:
+            progress_cb("preview", 60, "生成预览图...")
+        # canvas runtime preview uses explicit times; split-root uses narration beats
+        if self._v2_kind == 'canvas-split-root':
+            preview_times = '1,7,18,33,47,56'
+        else:
+            preview_times = '0,2.5,5.2,7.9,10.5'
+        code, out, err = self._run_motion('preview',
+            [str(project_dir), '--times', preview_times], timeout=180)
+        self._mark_preview_reviewed(project_dir)
+
+        # 6. render - output must be inside instance; no --workers for canvas
+        if progress_cb:
+            progress_cb("render", 70, "渲染视频...")
+        render_out = self.instance_dir / "render_out" / "output.mp4"
+        render_out.parent.mkdir(parents=True, exist_ok=True)
+        code, out, err = self._run_motion('render',
+            [str(project_dir), '--out', str(render_out)], timeout=1800)
+        if code != 0:
+            raise RenderError("render", "渲染失败(v2)", (err + out)[-800:])
+
+        # Copy to desired output path
+        if render_out != out_path and render_out.exists():
+            shutil.copy2(render_out, out_path)
+
+        elapsed = time.time() - t0
+        if progress_cb:
+            progress_cb("done", 100, f"完成 ({elapsed:.1f}s)")
+
+        return {
+            'success': True,
+            'output_path': str(out_path),
+            'elapsed_s': round(elapsed, 1),
+            'format': 'personal-download-v1',
+            'runtime_generation': 'v2',
+            'v2_kind': self._v2_kind,
             'project_dir': str(project_dir),
         }
