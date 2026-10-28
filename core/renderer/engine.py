@@ -61,11 +61,14 @@ class RenderEngine:
         env["PYTHONUTF8"] = "1"
         env["PYTHONIOENCODING"] = "utf-8"
         env["LANG"] = "en_US.UTF-8"
-        # Find system Chrome
+        # Find system Chrome（运行时探测，仓库不存本机绝对路径）
         chrome_paths = [
-            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-            os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
+            os.path.join(os.environ.get("ProgramFiles", ""),
+                         r"Google\Chrome\Application\chrome.exe"),
+            os.path.join(os.environ.get("ProgramFiles(x86)", ""),
+                         r"Google\Chrome\Application\chrome.exe"),
+            os.path.join(os.environ.get("LOCALAPPDATA", ""),
+                         r"Google\Chrome\Application\chrome.exe"),
         ]
         for p in chrome_paths:
             if Path(p).exists():

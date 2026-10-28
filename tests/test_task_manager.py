@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Tests for core.producer.task_manager (Phase 3 I1/I2)."""
+"""Tests for core.producer (Phase 3 I1/I2/I3)."""
 import json
 from pathlib import Path
 
@@ -7,11 +7,14 @@ import pytest
 
 from core.producer import (
     TaskManager,
+    ProducerRunner,
     ParamFiller,
     substitute,
     fill,
     collect_row_vars,
     STATUS_READY,
+    STATUS_DONE,
+    STATUS_FAILED,
     STATUS_SKIPPED,
     STATUS_PENDING,
 )
@@ -278,3 +281,120 @@ class TestCsvVarSubstitution:
         assert t.params["title"] == "新能源-7"
         assert t.name == "批7"
         assert t.output == "7.mp4"
+
+
+class _FakeScheduler:
+    """Fake BatchScheduler 替身：按 (output_path → success) 映射返回结果。"""
+
+    def __init__(self, results: dict, resume: bool = True):
+        self.results = results
+        self.resume = resume
+        self.skipped_existing = 0
+
+    def run(self, tasks, progress_cb=None):
+        from core.renderer.batch import TaskResult, BatchReport
+        report = BatchReport()
+        runnable = list(tasks)
+        if self.resume:
+            skipped = [t for t in runnable if Path(t.output_path).exists()]
+            report.skipped_existing = len(skipped)
+            runnable = [t for t in runnable if not Path(t.output_path).exists()]
+        for t in runnable:
+            ok = self.results.get(t.output_path, False)
+            report.tasks.append(TaskResult(
+                name=t.name, template_path=t.template_path,
+                output_path=t.output_path, success=ok,
+                error="" if ok else "fake-fail",
+                error_stage="render" if not ok else "",
+                elapsed_s=0.1))
+        report.finished_at = 1.0
+        return report
+
+
+class TestProducerRunner:
+    """I3 并行渲染调度：状态机 / 断点续跑 / 摘要。"""
+
+    @pytest.fixture
+    def runner(self, manager):
+        return ProducerRunner(manager, resume=True)
+
+    def _add(self, manager, name: str):
+        from conftest import standard_params
+        # 输出用绝对路径（runner 解析后 = manager.output_dir/name）
+        out = str(Path(manager.output_dir) / name)
+        t = manager.add("test_standard", standard_params(), output=out)
+        assert t.status == STATUS_READY
+        return t
+
+    def test_run_success(self, runner, manager):
+        self._add(manager, "a.mp4")
+        runner.scheduler_factory = lambda: _FakeScheduler(
+            {str(Path(manager.output_dir) / "a.mp4"): True})
+        s = runner.run()
+        assert s.ran == 1 and s.succeeded == 1 and s.failed == 0
+        t = manager.get(manager.list_tasks()[0].id)
+        assert t.status == STATUS_DONE
+        assert t.meta["elapsed_s"] > 0
+
+    def test_run_failure(self, runner, manager):
+        self._add(manager, "a.mp4")
+        runner.scheduler_factory = lambda: _FakeScheduler(
+            {str(Path(manager.output_dir) / "a.mp4"): False})
+        s = runner.run()
+        assert s.failed == 1 and s.failures[0]["id"].startswith("test_standard")
+        t = manager.get(manager.list_tasks()[0].id)
+        assert t.status == STATUS_FAILED
+        assert t.error == "fake-fail"
+
+    def test_run_skips_done(self, runner, manager):
+        # 一个 done + 一个 ready：只跑 ready
+        from conftest import standard_params
+        t1 = manager.add("test_standard", standard_params(),
+                         output=str(Path(manager.output_dir) / "a.mp4"))
+        manager.update(t1.id, status=STATUS_DONE)
+        t2 = self._add(manager, "b.mp4")
+        runner.scheduler_factory = lambda: _FakeScheduler(
+            {str(Path(manager.output_dir) / "b.mp4"): True})
+        s = runner.run()
+        assert s.ran == 1 and s.succeeded == 1
+        assert manager.get(t2.id).status == STATUS_DONE
+        assert manager.get(t1.id).status == STATUS_DONE  # 不重跑
+
+    def test_retry_failed(self, runner, manager):
+        from conftest import standard_params
+        t = manager.add("test_standard", standard_params(),
+                        output=str(Path(manager.output_dir) / "a.mp4"))
+        manager.update(t.id, status=STATUS_FAILED, error="旧错误")
+        runner.scheduler_factory = lambda: _FakeScheduler(
+            {str(Path(manager.output_dir) / "a.mp4"): True})
+        s = runner.run(retry_failed=True)
+        assert s.succeeded == 1
+        assert manager.get(t.id).status == STATUS_DONE
+
+    def test_run_no_candidates(self, runner, manager):
+        s = runner.run()
+        assert s.ran == 0 and s.succeeded == 0 and s.failed == 0
+
+    def test_resume_skips_existing(self, manager, tmp_path):
+        # 输出文件已存在 → resume 跳过并标记 done
+        from conftest import standard_params
+        t = manager.add("test_standard", standard_params(),
+                        output=str(tmp_path / "exist.mp4"))
+        (tmp_path / "exist.mp4").write_bytes(b"ok")
+        r = ProducerRunner(manager, resume=True)
+        r.scheduler_factory = lambda: _FakeScheduler({}, resume=True)
+        s = r.run()
+        assert s.ran == 0 and s.skipped_existing == 1
+        assert manager.get(t.id).status == STATUS_DONE
+        assert manager.get(t.id).meta.get("skipped_existing") is True
+
+    def test_missing_template_failed(self, manager):
+        t = manager.add("不存在的模板", {}, output="x.mp4")
+        assert t.status == STATUS_SKIPPED
+        # 置 failed 后 --retry-failed：runner 重试时模板仍缺失 → failed
+        manager.update(t.id, status=STATUS_FAILED, error="旧错误")
+        runner = ProducerRunner(manager)
+        runner.scheduler_factory = lambda: _FakeScheduler({})
+        s = runner.run(retry_failed=True)
+        assert s.failed == 1
+        assert "模板不存在" in manager.get(t.id).error

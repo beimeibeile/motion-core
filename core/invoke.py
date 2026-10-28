@@ -323,7 +323,8 @@ def _handle_producer_task(action: str, tasks_file: str = "tasks.json",
     Returns:
         操作结果 dict
     """
-    from core.producer import TaskManager
+    from core.producer import TaskManager, ProducerRunner
+    from core.renderer.batch import BatchScheduler
 
     mgr = TaskManager(tasks_file=tasks_file, template_dir=template_dir,
                       output_dir=output_dir)
@@ -370,6 +371,19 @@ def _handle_producer_task(action: str, tasks_file: str = "tasks.json",
     elif action == "clear":
         mgr.clear()
         return {"summary": mgr.status_summary()}
+    elif action == "run":
+        from core.producer import ProducerRunner
+        retry_failed = bool(kwargs.get("retry_failed", False))
+        resume = bool(kwargs.get("resume", True))
+        jobs = int(kwargs.get("jobs", 1))
+        runner = ProducerRunner(
+            mgr, resume=resume,
+            scheduler_factory=lambda: BatchScheduler(
+                jobs=jobs, retry=int(kwargs.get("retry", 1)),
+                resume=resume))
+        summary = runner.run(retry_failed=retry_failed)
+        return {"summary": summary.to_dict(),
+                "tasks": [t.to_dict() for t in mgr.list_tasks()]}
     else:
         raise ValueError(f"Unknown action: {action}. "
-                         f"Expected: import/list/add/update/remove/status/clear")
+                         f"Expected: import/list/add/update/remove/status/clear/run")

@@ -67,6 +67,7 @@ class BatchReport:
     tasks: list[TaskResult] = field(default_factory=list)
     started_at: float = 0.0
     finished_at: float = 0.0
+    skipped_existing: int = 0
 
     @property
     def total(self) -> int:
@@ -89,6 +90,7 @@ class BatchReport:
             "total": self.total,
             "succeeded": self.succeeded,
             "failed": self.failed,
+            "skipped_existing": self.skipped_existing,
             "total_elapsed_s": round(self.total_elapsed, 2),
         }
 
@@ -109,17 +111,21 @@ class BatchScheduler:
         retry: 每任务最大重试次数（默认 1，即失败后重试 1 次）
         gate_config: QualityGate 配置（如 ffprobe_path）
         work_dir: 渲染工作目录（默认每个模板同目录 _render_work）
+        resume: 断点续跑——输出文件已存在的任务跳过（不重新渲染），
+                计入 BatchReport.skipped_existing
     """
 
     RETRYABLE_STAGES = {"env", "prepare", "render", "unknown"}
 
     def __init__(self, jobs: int = 1, retry: int = 1,
                  gate_config: Optional[dict] = None,
-                 work_dir: Optional[str] = None):
+                 work_dir: Optional[str] = None,
+                 resume: bool = False):
         self.jobs = max(1, jobs)
         self.retry = max(0, retry)
         self.gate_config = gate_config or {}
         self.work_dir = work_dir
+        self.resume = resume
 
     def _run_task(self, task: BatchTask, progress_cb: Optional[Callable] = None) -> TaskResult:
         """执行单个任务（含重试与质量门）。"""
@@ -191,29 +197,37 @@ class BatchScheduler:
 
     def run(self, tasks: list[BatchTask],
             progress_cb: Optional[Callable] = None) -> BatchReport:
-        """并行执行任务队列，返回汇总报告。"""
+        """并行执行任务队列，返回汇总报告。
+
+        resume=True 时跳过输出已存在的任务（计入 report.skipped_existing）。
+        """
         report = BatchReport()
         report.started_at = time.time()
+        runnable = list(tasks)
+        if self.resume:
+            skipped = [t for t in runnable if Path(t.output_path).exists()]
+            report.skipped_existing = len(skipped)
+            runnable = [t for t in runnable if not Path(t.output_path).exists()]
         done = 0
-        total = len(tasks)
+        total = len(runnable)
 
         def _cb_wrapper(task, stage, attempt):
             done_ = done
             if progress_cb:
                 progress_cb(task, stage, attempt, done_, total)
 
-        if self.jobs == 1 or len(tasks) <= 1:
-            for task in tasks:
+        if self.jobs == 1 or len(runnable) <= 1:
+            for task in runnable:
                 report.tasks.append(self._run_task(task, _cb_wrapper))
         else:
             with ThreadPoolExecutor(max_workers=self.jobs) as pool:
                 futures = {pool.submit(self._run_task, task, _cb_wrapper): task
-                           for task in tasks}
+                           for task in runnable}
                 for fut in as_completed(futures):
                     report.tasks.append(fut.result())
 
         # 保持任务输入顺序
-        order = {t.output_path: i for i, t in enumerate(tasks)}
+        order = {t.output_path: i for i, t in enumerate(runnable)}
         report.tasks.sort(key=lambda r: order.get(r.output_path, 0))
         report.finished_at = time.time()
         return report
