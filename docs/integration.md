@@ -74,7 +74,7 @@ result = pipeline.render(params={"title": "Hello"}, output_path="out.mp4")
 
 ## 二、ai-video-editor 集成
 
-**项目路径**：`C:\Users\Administrator\AppData\Local\DoubaoWork\User Data\Default\.doubaowork\agent_mode\workspace\.user_skills\ai-video-editor`
+**项目路径**：ai-video-editor skill 目录（能力注册中心自动扫描 `.user_skills/` 定位）
 **架构特点**：能力注册中心 v2.0，自动发现已安装 skill 的能力声明，通过 `invoke()` 统一调用，不直接 import。
 
 ### 集成方式：能力注册中心自动发现
