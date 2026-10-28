@@ -66,10 +66,28 @@ capabilities:
     priority: 6
     version: ">=0.1.0"
     params:
-      action: "str - extract/list/combine/match"
+      action: "str - extract/list/search/get/combine"
       template_path: "str, optional - 源模板路径（extract 时必填）"
-      fragment_id: "str, optional - 片段 ID"
+      fragment_id: "str, optional - 片段 ID（get/combine 时必填）"
       library_path: "str, optional - 片段库路径"
+    fallback: null
+  - name: producer_task_manage
+    description: "批量生产任务管理（Phase 3 I1）：任务列表持久化（JSON）、CSV/JSON 任务导入（param.* 列展开 + 类型转换）、增删改查、状态汇总、模板存在性与参数 schema 预校验"
+    skill: omotion-core
+    entry_point: core.invoke.invoke
+    dependencies: ["python_deps"]
+    priority: 5
+    version: ">=0.1.0"
+    params:
+      action: "str - import/list/add/update/remove/status/clear"
+      tasks_file: "str - 任务文件 JSON 路径（默认 tasks.json）"
+      template_dir: "str, optional - 模板库目录（解析相对模板名）"
+      output_dir: "str, optional - 输出目录（解析相对输出路径）"
+      template: "str, optional - 模板名（add 时必填）"
+      params: "dict, optional - 模板参数（add 时可选）"
+      output: "str, optional - 输出路径（add 时可选）"
+      task_id: "str, optional - 任务 id（update/remove 时必填）"
+      status: "str, optional - 状态筛选（list 时可选）"
     fallback: null
 ---
 
@@ -92,6 +110,7 @@ capabilities:
 | `motion_quality_check` | 四层质量门 | 8 | python |
 | `motion_param_manage` | 参数管理 | 7 | python |
 | `motion_fragment_manage` | 片段库管理 | 6 | python |
+| `producer_task_manage` | 批量生产任务管理（Phase 3） | 5 | python |
 
 ## 集成方式
 

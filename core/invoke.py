@@ -292,3 +292,83 @@ def _handle_fragment_manage(action: str, template_path: Optional[str] = None,
     else:
         raise ValueError(f"Unknown action: {action}. "
                          f"Expected: extract/list/search/get/combine")
+
+
+@_register("producer_task_manage")
+def _handle_producer_task(action: str, tasks_file: str = "tasks.json",
+                          template_dir: Optional[str] = None,
+                          output_dir: Optional[str] = None,
+                          template: Optional[str] = None,
+                          params: Optional[Dict[str, Any]] = None,
+                          output: Optional[str] = None,
+                          name: Optional[str] = None,
+                          task_id: Optional[str] = None,
+                          status: Optional[str] = None,
+                          **kwargs) -> Dict[str, Any]:
+    """
+    批量生产任务管理（Phase 3 I1）
+
+    Args:
+        action: import/list/add/update/remove/status/clear
+        tasks_file: 任务文件 JSON 路径（默认 tasks.json）
+        template_dir: 模板库目录（解析相对模板名）
+        output_dir: 输出目录（解析相对输出路径）
+        template: 模板名（add 时必填）
+        params: 模板参数 dict（add 时可选）
+        output: 输出路径（add 时可选）
+        name: 任务名（add 时可选）
+        task_id: 任务 id（update/remove 时必填）
+        status: 状态筛选（list 时可选）
+
+    Returns:
+        操作结果 dict
+    """
+    from core.producer import TaskManager
+
+    mgr = TaskManager(tasks_file=tasks_file, template_dir=template_dir,
+                      output_dir=output_dir)
+
+    if action == "import":
+        file = kwargs.get("file")
+        if not file:
+            raise ValueError("import 需要 file 参数（CSV 或 JSON 路径）")
+        path = Path(file)
+        if path.suffix.lower() == ".csv":
+            imported = mgr.import_csv(str(path))
+        else:
+            imported = mgr.import_json(str(path))
+        return {"imported": len(imported),
+                "summary": mgr.status_summary(),
+                "tasks": [t.to_dict() for t in imported]}
+    elif action == "list":
+        items = mgr.list_tasks(status=status)
+        return {"summary": mgr.status_summary(),
+                "tasks": [t.to_dict() for t in items]}
+    elif action == "add":
+        if not template:
+            raise ValueError("add 需要 template 参数")
+        task = mgr.add(template=template, params=params or {},
+                       output=output or "", name=name or "")
+        return {"task": task.to_dict(), "summary": mgr.status_summary()}
+    elif action == "update":
+        if not task_id:
+            raise ValueError("update 需要 task_id 参数")
+        fields = {k: v for k, v in kwargs.items()
+                  if k in ("params", "output", "name", "status", "error")}
+        task = mgr.update(task_id, **fields)
+        if task is None:
+            raise ValueError(f"任务不存在: {task_id}")
+        return {"task": task.to_dict()}
+    elif action == "remove":
+        if not task_id:
+            raise ValueError("remove 需要 task_id 参数")
+        return {"removed": mgr.remove(task_id),
+                "summary": mgr.status_summary()}
+    elif action == "status":
+        return mgr.status_summary()
+    elif action == "clear":
+        mgr.clear()
+        return {"summary": mgr.status_summary()}
+    else:
+        raise ValueError(f"Unknown action: {action}. "
+                         f"Expected: import/list/add/update/remove/status/clear")
