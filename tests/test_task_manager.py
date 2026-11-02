@@ -466,6 +466,28 @@ class TestTemplateIndex:
         assert all(p.aspect == "横屏" for p in h)
         assert v[0].name.startswith("现代图文_口播讲解_竖屏")
 
+    def test_two_part_name_parses(self, tmp_path):
+        """两段式命名（类型_画幅_v版本，无用途段）可解析。"""
+        d = tmp_path / "tpl2"
+        d.mkdir()
+        (d / "3D口播开场_横屏_v1.0.0.motion").write_bytes(b"x")
+        idx = TemplateIndex(str(d))
+        assert len(idx.profiles) == 1
+        p = idx.profiles[0]
+        assert p.type == "3D口播开场" and p.aspect == "横屏"
+        assert p.version == "1.0.0"
+
+    def test_square_aspect_parses(self, tmp_path):
+        """方屏（1:1）画幅命名可解析。"""
+        d = tmp_path / "tpl3"
+        d.mkdir()
+        (d / "量价图表K线_方屏_v1.0.0.motion").write_bytes(b"x")
+        idx = TemplateIndex(str(d))
+        assert len(idx.profiles) == 1
+        p = idx.profiles[0]
+        assert p.aspect == "方屏"
+        assert p.type == "量价图表K线"
+
     def test_invoke_capabilities(self, tdir):
         from core.invoke import invoke
         r = invoke("producer_template_capabilities", template_dir=tdir,

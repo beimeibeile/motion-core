@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Optional
 
 _NAME_RE = re.compile(
-    r"^(?P<type>[^_]+)_(?P<use>[^_]+)_(?P<aspect>横屏|竖屏)"
+    r"^(?P<type>[^_]+)_(?:(?P<use>[^_]+)_)?(?P<aspect>横屏|竖屏|方屏)"
     r"(?:_v?(?P<ver>[^_]+))?$")
 
 # 内置模板属性表（类型 → 关键词/推荐场景/时长范围/口播）
