@@ -151,3 +151,19 @@ def schema() -> dict:
         },
         "additionalProperties": False,
     }
+
+
+@pytest.fixture
+def requirement_catalog(tmp_path: Path) -> str:
+    """迷你 catalog（B1/B2 纯文本 + A 组 wall 素材），供需求智能处理测试。"""
+    catalog = {
+        "profile": "kinetic-text-slots/1",
+        "groups": [
+            {"id": "B1", "start": 0.0, "end": 8.0, "media": []},
+            {"id": "B2", "start": 8.0, "end": 18.0, "media": []},
+            {"id": "A", "start": 20.0, "end": 26.133, "media": ["wall"]},
+        ],
+    }
+    p = tmp_path / "catalog.json"
+    p.write_text(json.dumps(catalog, ensure_ascii=False), encoding="utf-8")
+    return str(p)

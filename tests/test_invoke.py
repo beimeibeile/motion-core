@@ -59,3 +59,54 @@ class TestInvoke:
         result = invoke("motion_quality_check",
                         template_path=str(standard_tpl), params={}, level="all")
         assert result["success"] is True
+
+
+class TestRequirementCapabilities:
+    """模板需求智能处理（P0 / I8 前置）invoke 能力验证。"""
+
+    def test_requirement_plan_registered(self):
+        caps = list_capabilities()
+        assert "producer_requirement_plan" in caps
+        assert "producer_requirement_build" in caps
+
+    def test_requirement_plan_text_route(self, requirement_catalog):
+        result = invoke(
+            "producer_requirement_plan",
+            catalog_path=requirement_catalog,
+            script="产品参数很关键。续航提升百分之三十。")
+        assert result["success"] is True
+        plan = result["result"]
+        assert plan["blocked"] is False
+        assert plan["route"] == "text"
+        assert plan["selected"] == ["B1", "B2"]
+
+    def test_requirement_plan_blocks_empty(self, requirement_catalog):
+        result = invoke(
+            "producer_requirement_plan",
+            catalog_path=requirement_catalog, script="   ")
+        assert result["success"] is True
+        assert result["result"]["blocked"] is True
+        assert result["result"]["report"]
+
+    def test_requirement_build_contract(self, requirement_catalog):
+        result = invoke(
+            "producer_requirement_build",
+            catalog_path=requirement_catalog,
+            script="产品参数很关键。续航提升百分之三十。",
+            title="参数测试", topic="参数测试")
+        assert result["success"] is True
+        r = result["result"]
+        assert r["blocked"] is False
+        assert r["params"]["duration"] == 18.0
+        assert r["params"]["basic"]["keyword"] == "产品参数很关键"
+        assert r["contentEvidence"] == ["产品参数很关键", "续航提升百分之三十"]
+        assert r["ownershipRefs"] == {"B1": "产品参数很关键",
+                                      "B2": "续航提升百分之三十"}
+
+    def test_requirement_build_blocked_no_params(self, requirement_catalog):
+        result = invoke(
+            "producer_requirement_build",
+            catalog_path=requirement_catalog, script="   ")
+        assert result["success"] is True
+        assert result["result"]["blocked"] is True
+        assert result["result"]["params"] is None

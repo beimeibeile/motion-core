@@ -109,6 +109,39 @@ capabilities:
       task_id: "str, optional - 任务 id（update/remove 时必填）"
       status: "str, optional - 状态筛选（list 时可选）"
     fallback: null
+  - name: producer_requirement_plan
+    description: "模板需求智能处理（P0 / I8 前置）：整篇台词 → 语义阶段（短标题/原文/关键 cue）→ 场景映射（B 组纯文本 / 素材组判定）→ 素材槽位判定 → 缺项阻塞报告（needs-binding）。不让用户手填各套字段，仅需台词+素材"
+    skill: omotion-core
+    entry_point: core.invoke.invoke
+    dependencies: ["python_deps"]
+    priority: 5
+    version: ">=0.1.0"
+    params:
+      catalog_path: "str - 模板 core/catalog.json 绝对路径"
+      script: "str - 整篇台词/需求文本（必填）"
+      layout: "str, optional - 画幅 landscape/portrait，默认 landscape"
+      voiceover: "bool, optional - 是否口播需求，默认 True"
+      assets: "dict, optional - 用户素材 {role_or_name: path}，有素材走素材组路线"
+      content: "dict, optional - 素材组必填文本字段 {GID.field: text}"
+      max_stages: "int, optional - 语义阶段上限，默认 4（B 组上限）"
+    fallback: null
+  - name: producer_requirement_build
+    description: "模板需求智能处理契约生成：台词 → 契约合法参数（B 组字段以台词拆解覆盖、素材组 content 重验、duration=Σ原生时长）；缺项阻塞返回报告不出参数；附带 contentEvidence/ownershipRefs（覆盖所有保留台词且不重复不错序）"
+    skill: omotion-core
+    entry_point: core.invoke.invoke
+    dependencies: ["python_deps"]
+    priority: 5
+    version: ">=0.1.0"
+    params:
+      catalog_path: "str - 模板 core/catalog.json 绝对路径"
+      script: "str - 整篇台词/需求文本（必填）"
+      layout: "str, optional - 画幅 landscape/portrait"
+      assets: "dict, optional - 素材组媒体绑定"
+      content: "dict, optional - 素材组必填文本字段"
+      title/topic: "str, optional - 视频标题/主题"
+      language: "str, optional - zh/en，默认 zh"
+      captions: "list, optional - 字幕"
+    fallback: null
 ---
 
 # O.motion Core — .motion 共享核心库
@@ -135,6 +168,8 @@ capabilities:
 | `producer_template_capabilities` | 按画幅列可用模板（O4，参考 adu auto-capabilities） | 5 | python |
 | `producer_batch_report` | 批量质量报告（Phase 3 I5） | 5 | python |
 | `producer_deliver` | 成品交付与归档（Phase 3 I6） | 5 | python |
+| `producer_requirement_plan` | 模板需求智能处理：台词→语义阶段→场景映射→缺项阻塞（P0/I8 前置） | 5 | python |
+| `producer_requirement_build` | 模板需求智能处理：台词→契约合法参数（缺项阻塞不出参数） | 5 | python |
 
 ## 集成方式
 

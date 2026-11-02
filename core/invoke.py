@@ -494,3 +494,89 @@ def _handle_producer_deliver(tasks_file: str = "tasks.json",
                       output_dir=output_dir)
     result = deliver(mgr, out_root=out_root, archive=archive)
     return result.to_dict()
+
+@_register("producer_requirement_plan")
+def _handle_requirement_plan(catalog_path: str, script: str,
+                             layout: str = "landscape",
+                             voiceover: bool = True,
+                             assets: Optional[Dict[str, Any]] = None,
+                             content: Optional[Dict[str, Any]] = None,
+                             max_stages: int = 4,
+                             **kwargs) -> Dict[str, Any]:
+    """模板需求智能处理（P0 / I8 前置）：台词 → 语义阶段 → 场景映射 → 阻塞报告。
+
+    Args:
+        catalog_path: 模板 core/catalog.json 绝对路径
+        script: 整篇台词/需求文本（必填）
+        layout: 画幅 landscape/portrait
+        voiceover: 是否口播需求
+        assets: 用户素材 {"role_or_name": "/path/..."}（可选；有素材走素材组路线）
+        content: 素材组必填文本字段 {"GID.field": "..."}（可选）
+        max_stages: 语义阶段上限（默认 4 = B 组上限）
+
+    Returns:
+        plan（route/selected/stages/media_required/media_provided/
+        blockers/warnings/blocked）+ blockers_report
+    """
+    from core.producer.requirement_adapter import RequirementAdapter
+    ra = RequirementAdapter(catalog_path)
+    plan = ra.plan(script=script, layout=layout, voiceover=voiceover,
+                   assets=assets, content=content, max_stages=max_stages)
+    return {
+        "route": plan.route,
+        "selected": plan.selected,
+        "stages": [{"index": s.index, "title": s.title,
+                    "text": s.text, "cues": s.cues} for s in plan.stages],
+        "media_required": plan.media_required,
+        "media_provided": plan.media_provided,
+        "blockers": plan.blockers,
+        "warnings": plan.warnings,
+        "blocked": plan.blocked,
+        "report": plan.blockers_report() if plan.blocked else "",
+    }
+
+
+@_register("producer_requirement_build")
+def _handle_requirement_build(catalog_path: str, script: str,
+                              layout: str = "landscape",
+                              voiceover: bool = True,
+                              assets: Optional[Dict[str, Any]] = None,
+                              content: Optional[Dict[str, Any]] = None,
+                              title: Optional[str] = None,
+                              topic: Optional[str] = None,
+                              language: str = "zh",
+                              presenter_label: str = "",
+                              sound_effects: str = "native",
+                              captions: Optional[list] = None,
+                              max_stages: int = 4,
+                              **kwargs) -> Dict[str, Any]:
+    """模板需求智能处理：台词 → 契约合法参数（阻塞时返回报告，不出参数）。
+
+    Args:
+        同 producer_requirement_plan，另加：
+        title/topic/language/presenter_label/sound_effects/captions
+
+    Returns:
+        blocked=True 时返回 report/error；否则返回 params + contentEvidence
+        + ownershipRefs（覆盖所有保留台词且不重复不错序）
+    """
+    from core.producer.requirement_adapter import RequirementAdapter
+    ra = RequirementAdapter(catalog_path)
+    plan = ra.plan(script=script, layout=layout, voiceover=voiceover,
+                   assets=assets, content=content, max_stages=max_stages)
+    result = ra.build(plan, title=title, topic=topic, language=language,
+                      content=content, media=assets,
+                      captions=captions, presenter_label=presenter_label,
+                      sound_effects=sound_effects)
+    if result.blocked:
+        return {
+            "blocked": True,
+            "report": result.error or plan.blockers_report(),
+            "params": None,
+        }
+    return {
+        "blocked": False,
+        "params": result.params,
+        "contentEvidence": result.content_evidence,
+        "ownershipRefs": result.ownership_refs,
+    }

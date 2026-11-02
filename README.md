@@ -17,6 +17,8 @@ O.motion Core 是面向 `.motion` 开放动画模板格式的 Python 共享核�
 | `motion_quality_check` | `core/quality_gate/` | 四层质量门（静态/参数/渲染/成品） | 8 |
 | `motion_param_manage` | `core/param_manager/` | JSON Schema 参数解析、预设管理 | 7 |
 | `motion_fragment_manage` | `core/fragment_manager/` | 动画片段库管理、提取、组合 | 6 |
+| `producer_requirement_plan` | `core/producer/requirement_adapter.py` | 模板需求智能处理：台词→语义阶段→场景映射→缺项阻塞报告（I8 前置） | 5 |
+| `producer_requirement_build` | `core/producer/requirement_adapter.py` | 模板需求智能处理：台词→契约合法参数（缺项阻塞不出参数） | 5 |
 
 ## 格式兼容
 

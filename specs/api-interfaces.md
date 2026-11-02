@@ -179,3 +179,66 @@ fragment = lib.get("text-highlight-01")
 | E4002 | 输出时长不匹配 |
 | E5001 | 片段不存在 |
 | E5002 | 片段组合失败 |
+
+## 8. 需求智能处理接口（P0 / I8 前置，v0.2.0 新增）
+
+模板需求智能处理层：把"模板需求（整篇台词/文案）→ 契约合法参数"的转换机械化，
+不让用户手填各套字段（参考 adu-motion-video auto-plan/auto-build 原则）。
+未通过 blockers 的需求不得进入渲染（防止批量模式下大批"白痴视频"）。
+
+### RequirementAdapter(catalog_path)
+
+读取模板 `core/catalog.json`，提供台词拆解 / 场景映射 / 素材槽位判定 / 契约生成。
+
+### plan(script, layout, voiceover, assets, content, max_stages) -> RequirementPlan
+
+整篇台词 → 语义阶段（短标题/原文/关键 cue）→ 场景映射 → 素材槽位判定 → 阻塞报告。
+
+- `route`: `"text"`（B 组纯文本，无需素材）/ `"media"`（素材组）
+- `selected`: 选中组 id 列表（B1..B4 或素材组）
+- `media_required`: 选中组要求的 media roles
+- `blockers`: 缺项原因（非空 = 不得渲染）：
+  - 台词为空
+  - 语义阶段数超过 B 组上限 4（纯文本路线）
+  - 素材组候选不足（台词无法完整覆盖，不静默丢弃）
+  - 组需绑定素材 role 缺失（needs-binding）
+  - 素材组 required content 字段缺失（缺内容 needs-binding）
+
+### build(plan, title, topic, language, content, media, ...) -> BuildResult
+
+契约合法参数生成（复用 `build_standard_params`），未通过 blockers 时返回 `blocked=True`
+且 `params=None`。
+
+- B 组 basic 字段以台词拆解的语义阶段内容覆盖（替代 topic 示例文本）
+- 素材组 required content 独立重验（防绕过 plan 直接 build 产生空文本）
+- `contentEvidence`: 保留台词原文（逐阶段，不重复不错序）
+- `ownershipRefs`: 组 → 阶段短标题（来源标记）
+
+### invoke 能力
+
+| 能力名 | 说明 |
+|--------|------|
+| `producer_requirement_plan` | 需求理解：台词→语义阶段→场景映射→阻塞报告 |
+| `producer_requirement_build` | 契约生成：台词→契约合法参数（阻塞返回报告不出参数） |
+
+典型调用（批量任务理解期 / 即时任务理解）：
+
+```python
+from core.invoke import invoke
+
+# 1) 先 plan：查看是否可自动映射、缺什么
+plan = invoke("producer_requirement_plan",
+              catalog_path="template/core/catalog.json",
+              script="整篇台词…",
+              assets={"wall": "素材/背景.jpg"})
+# plan["blocked"] == True → 回任务理解期补齐（plan["report"] 给出原因）
+
+# 2) 再 build：生成契约合法参数（含 contentEvidence/ownershipRefs）
+built = invoke("producer_requirement_build",
+               catalog_path="template/core/catalog.json",
+               script="整篇台词…",
+               assets={"wall": "素材/背景.jpg"},
+               content={"S11.text001": "…"},  # 素材组必填字段
+               title="标题", topic="主题")
+# built["blocked"] == False → built["params"] 可直接进入渲染
+```
