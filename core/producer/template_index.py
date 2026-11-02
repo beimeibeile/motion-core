@@ -141,6 +141,16 @@ class TemplateIndex:
         ranked.sort(key=lambda p: (-p.score, p.name))
         return ranked[:max(1, top)]
 
+    def list_by_aspect(self, aspect: Optional[str] = None) -> list[TemplateProfile]:
+        """按画幅列出可用模板（参考 adu-motion-video auto-capabilities --layout）。
+
+        aspect 为空返回全部；传 横屏/竖屏 只返回该画幅可用模板。
+        供调用方在选型前先列出"当前画幅可用规模"，避免跨画幅误选。
+        """
+        if not aspect:
+            return list(self.profiles)
+        return [p for p in self.profiles if p.aspect == aspect]
+
     def as_dicts(self) -> list[dict]:
         return [{
             "name": p.name, "type": p.type, "purpose": p.purpose,

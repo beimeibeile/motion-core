@@ -389,6 +389,33 @@ def _handle_producer_task(action: str, tasks_file: str = "tasks.json",
                          f"Expected: import/list/add/update/remove/status/clear/run")
 
 
+@_register("producer_template_capabilities")
+def _handle_template_capabilities(template_dir: str, layout: Optional[str] = None,
+                                  **kwargs) -> Dict[str, Any]:
+    """按画幅列出可用模板（参考 adu-motion-video auto-capabilities --layout）。
+
+    Args:
+        template_dir: 模板库目录（扫描 *.motion）
+        layout: 画幅过滤（横屏 / 竖屏；空 = 全部）
+
+    Returns:
+        画幅可用模板清单（不做打分，供选型前先看可用规模）
+    """
+    from core.producer import TemplateIndex
+    index = TemplateIndex(template_dir)
+    profiles = index.list_by_aspect(layout)
+    return {
+        "query": {"layout": layout},
+        "total_profiles": len(index.profiles),
+        "layout_count": len(profiles),
+        "templates": [{"name": p.name, "type": p.type, "purpose": p.purpose,
+                       "aspect": p.aspect, "version": p.version,
+                       "duration_s": list(p.duration_s),
+                       "voiceover": p.voiceover, "recommend": p.recommend}
+                      for p in profiles],
+    }
+
+
 @_register("producer_template_select")
 def _handle_template_select(template_dir: str, topic: Optional[str] = None,
                             duration_s: Optional[float] = None,

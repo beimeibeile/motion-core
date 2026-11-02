@@ -140,3 +140,13 @@ class TestStandardAdapter:
                                  "B1") == []
         assert BASIC_REQUIREMENTS["B2"] == ["heading", "points"]
         assert "B1" in TEXT_ONLY_IDS and "A" not in TEXT_ONLY_IDS
+
+    def test_portrait_layout_contract(self, catalog):
+        """竖屏契约：layout=portrait，契约顶层控制画幅（禁止只改 W/H）。"""
+        p = build_standard_params(catalog, topic="主题", layout="portrait")
+        assert p["layout"] == "portrait"
+        assert p["duration"] == 18.0
+
+    def test_layout_invalid_rejected(self, catalog):
+        with pytest.raises(ValueError, match="layout"):
+            build_standard_params(catalog, topic="t", layout="square")

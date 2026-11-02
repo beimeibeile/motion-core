@@ -99,11 +99,18 @@ def basic_for_group(group_id: str, topic: str, language: str = "zh") -> dict:
     return out
 
 
+# 竖屏契约（参考 adu-motion-video v3.14.1-rc.1）：brief 顶层 layout 控制画幅，
+# 禁止只改 width/height。portrait -> 1080x1920，landscape -> 1920x1080。
+LAYOUT_SIZES = {"landscape": (1920, 1080), "portrait": (1080, 1920)}
+LAYOUTS = tuple(LAYOUT_SIZES)
+
+
 def build_standard_params(catalog_path: str,
                           selected: Optional[list] = None,
                           title: str = "示例",
                           topic: str = "示例主题",
                           language: str = "zh",
+                          layout: str = "landscape",
                           duration: Optional[float] = None,
                           presenter_label: str = "",
                           content: Optional[dict] = None,
@@ -118,6 +125,7 @@ def build_standard_params(catalog_path: str,
         title: 视频标题（≤45 字符）
         topic: 内容主题（填 B 组 basic 示例字段）
         language: zh/en
+        layout: 画幅契约（landscape/portrait，竖屏自动 1080x1920；禁止只改 W/H）
         duration: 显式总时长（须 == Σ原生时长；默认自动算）
         presenter_label: 演示者标签（≤45）
         content: S 组/其余组必填字段文本，形如 {"S11.text001": "..."}
@@ -135,6 +143,9 @@ def build_standard_params(catalog_path: str,
     sel = list(selected or ["B1", "B2"])
     if language not in ("zh", "en"):
         raise ValueError("language 仅支持 zh/en")
+    if layout not in LAYOUTS:
+        raise ValueError(f"layout 仅支持 {'/'.join(LAYOUTS)}"
+                         f"（画幅由契约顶层控制，禁止只改 width/height）")
 
     scenes = []
     basic = {}
@@ -182,7 +193,7 @@ def build_standard_params(catalog_path: str,
     return {
         "mode": "user-media",
         "language": language,
-        "layout": "landscape",
+        "layout": layout,
         "duration": final_duration,
         "title": title,
         "presenterLabel": presenter_label,

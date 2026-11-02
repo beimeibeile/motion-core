@@ -458,6 +458,23 @@ class TestTemplateIndex:
         assert any("主题词命中" in r
                    for m in res["matches"] for r in m["reasons"])
 
+    def test_list_by_aspect(self, tdir):
+        idx = TemplateIndex(tdir)
+        h = idx.list_by_aspect("横屏")
+        v = idx.list_by_aspect("竖屏")
+        assert len(h) == 3 and len(v) == 1
+        assert all(p.aspect == "横屏" for p in h)
+        assert v[0].name.startswith("现代图文_口播讲解_竖屏")
+
+    def test_invoke_capabilities(self, tdir):
+        from core.invoke import invoke
+        r = invoke("producer_template_capabilities", template_dir=tdir,
+                   layout="竖屏")
+        res = r["result"]
+        assert res["layout_count"] == 1
+        assert res["templates"][0]["aspect"] == "竖屏"
+        assert "name" in res["templates"][0]
+
 
 class TestBatchReport:
     """I5 批量质量报告。"""
