@@ -16,6 +16,10 @@ from core.audit.slot_audit import (
     MISSING,
     CONTRACT_ONLY,
     SCHEMA_ONLY,
+    WAIVED,
+    load_literal_whitelist,
+    apply_literal_whitelist,
+    template_identity,
 )
 from core.audit.contract_source import (
     resolve_contract,
@@ -44,6 +48,10 @@ __all__ = [
     "MISSING",
     "CONTRACT_ONLY",
     "SCHEMA_ONLY",
+    "WAIVED",
+    "load_literal_whitelist",
+    "apply_literal_whitelist",
+    "template_identity",
     "resolve_contract",
     "slots_from_content_schema",
     "slots_from_guide",

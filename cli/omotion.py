@@ -253,7 +253,7 @@ def cmd_audit(args):
             target = tmpdir
         from core.audit import audit_slots
         try:
-            report = audit_slots(target)
+            report = audit_slots(target, whitelist_path=getattr(args, "whitelist", None))
         except ValueError as exc:
             # 目录不存在等输入问题：不是审计结论，按跳过处理
             print(f"ℹ️ 跳过审计：{exc}")
@@ -354,6 +354,9 @@ def main():
     audit_p.add_argument(
         "--strict", action="store_true",
         help="CI mode: no contract source -> exit 3; unhealthy -> exit 2")
+    audit_p.add_argument(
+        "--whitelist", default=None,
+        help="Path to slot literal whitelist JSON (default: core/audit/literal_whitelist.json)")
 
     # doctor
     doctor_p = subparsers.add_parser(

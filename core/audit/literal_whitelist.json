@@ -1,0 +1,16 @@
+{
+  "profile": "omotion.slot-literal-whitelist/1",
+  "note": "已确认「模板侧失效、且决定不在模板包内修改」的槽。审计侧按 template_id（可选 version）精确豁免，槽会标为 waived 而不是删掉；条目必须带 reason 与 evidence，模板升级后版本不符会自动失效并提示复核。只加已拍板的条目，不用它掩盖未查清的问题。",
+  "entries": [
+    {
+      "template_id": "kinetic-tech",
+      "version": "0.2.7-open-beta",
+      "section": "S14",
+      "slots": ["text013", "text014"],
+      "reason": "literal-text 槽：文案在 core/scenes/s12_14.js 里以字面文本直接写死，不存在 S14.text013 / S14.text014 这类标识；契约把 source 记成字符偏移（s12_14.js:25844 / 25882），而该文件实际仅 365 行，行号锚不可能命中。按「证据不足即不改模板包」处理，由审计侧豁免。",
+      "evidence": "python cli/omotion.py audit 该模板 → B 级 469 槽：found 467 / missing 2（S14.text013、S14.text014）；全部 469 槽 source 行号均超出源文件实际行数，行锚整体不可用（审计提示已置 sourceLine=None）。模板包未改动。",
+      "decided_at": "2026-11-05",
+      "decided_by": "user"
+    }
+  ]
+}

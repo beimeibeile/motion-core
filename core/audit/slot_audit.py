@@ -34,6 +34,7 @@ MOVED = "moved"            # 标识存在但行号偏移（契约行号需重算
 MISSING = "missing"        # 标识在源码完全消失（槽失效）
 CONTRACT_ONLY = "contract_only"  # 契约有、schema 无
 SCHEMA_ONLY = "schema_only"      # schema 有、契约无
+WAIVED = "waived"          # 已确认失效、按审计白名单豁免（模板包内不改）
 
 
 @dataclass
@@ -59,6 +60,7 @@ class SlotFinding:
 class SlotAuditReport:
     """槽审计报告。"""
     template_dir: str
+    template_id: str = ""
     contract_path: Optional[str] = None
     schema_path: Optional[str] = None
     source_files: List[str] = field(default_factory=list)
@@ -98,6 +100,7 @@ class SlotAuditReport:
             "schema_path": self.schema_path,
             "source_files": self.source_files,
             "total_slots": self.total_slots,
+            "template_id": self.template_id,
             "summary": self.summary,
             "healthy": self.healthy,
             "findings": [f.to_dict() for f in self.findings],
@@ -116,6 +119,8 @@ class SlotAuditReport:
         }
         lines.append(f"- 契约来源：**{_KIND_LABEL.get(self.contract_source, self.contract_source)}**")
         lines.append(f"- 模板目录：`{self.template_dir}`")
+        if self.template_id:
+            lines.append(f"- 模板标识：`{self.template_id}`")
         if self.contract_path:
             lines.append(f"- 契约：`{self.contract_path}`")
         if self.schema_path:
@@ -132,9 +137,11 @@ class SlotAuditReport:
         lines.append(f"| {MISSING} | {self.summary.get(MISSING, 0)} | 标识在源码消失（槽失效，标黄提示、不自动删） |")
         lines.append(f"| {CONTRACT_ONLY} | {self.summary.get(CONTRACT_ONLY, 0)} | 契约有、schema 无（参数侧移除 → 失效提示） |")
         lines.append(f"| {SCHEMA_ONLY} | {self.summary.get(SCHEMA_ONLY, 0)} | schema 有、契约无（新增槽未登记） |")
+        lines.append(f"| {WAIVED} | {self.summary.get(WAIVED, 0)} | 已确认失效、按审计白名单豁免（模板包内不改） |")
         lines.append("")
         # 按状态分组展示非健康项
         for status, title in ((MISSING, "失效槽（missing）"),
+                              (WAIVED, "已豁免（waived，模板侧不改）"),
                               (CONTRACT_ONLY, "契约有而 schema 无（contract_only）"),
                               (MOVED, "行号偏移（moved）"),
                               (SCHEMA_ONLY, "schema 有而契约无（schema_only）")):
@@ -153,7 +160,12 @@ class SlotAuditReport:
                 lines.append(f"- {w}")
             lines.append("")
         if self.healthy is True:
-            lines.append("> ✅ 契约健康：无失效槽、无参数侧移除。")
+            waived = self.summary.get(WAIVED, 0)
+            if waived:
+                lines.append(f"> ✅ 契约健康：无失效槽（另有 {waived} 个槽已按审计白名单豁免，"
+                             "理由与证据见 `core/audit/literal_whitelist.json`）。")
+            else:
+                lines.append("> ✅ 契约健康：无失效槽、无参数侧移除。")
         elif self.healthy is None:
             lines.append("> ⚠️ **健康状态未知**：未完成源码级校验"
                          "（无契约来源 / 无渲染源码 / 仅 param 级声明三种情形之一）。"
@@ -376,7 +388,88 @@ def compare_schema(contract_slots: List[Tuple[str, str, Dict]],
     return findings, warnings
 
 
-def audit_slots(template_dir: str | Path) -> SlotAuditReport:
+LITERAL_WHITELIST_NAME = "literal_whitelist.json"
+DEFAULT_WHITELIST = Path(__file__).parent / LITERAL_WHITELIST_NAME
+
+
+def template_identity(root: Path) -> Dict[str, str]:
+    """模板身份：优先取 motion.json 的 template.id / version（白名单按此精确匹配）。"""
+    mj = root / "motion.json"
+    if mj.is_file():
+        try:
+            data = json.loads(mj.read_text(encoding="utf-8"))
+            tpl = data.get("template") or {}
+            tid = str(tpl.get("id") or "")
+            if tid:
+                return {"id": tid, "version": str(tpl.get("version") or "")}
+        except (OSError, ValueError):
+            pass
+    return {"id": root.name, "version": ""}
+
+
+def load_literal_whitelist(path: Optional[str] = None) -> Dict:
+    """读审计侧 literal 白名单；文件不存在 = 空白名单，不改变审计结论。"""
+    p = Path(path) if path else DEFAULT_WHITELIST
+    if not p.is_file():
+        return {"entries": []}
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"白名单无法解析：{p}（{exc}）") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"白名单格式错误（顶层应为对象）：{p}")
+    data.setdefault("entries", [])
+    return data
+
+
+def apply_literal_whitelist(findings: List[SlotFinding], ident: Dict[str, str],
+                            whitelist: Dict) -> List[str]:
+    """把已确认失效的槽标记为 waived，并回报白名单自身的问题。
+
+    匹配键 = template_id（+ 可选 version）。版本变了就不再豁免 —— 模板升级后
+    槽可能已修好，继续沿用旧豁免会把真问题藏起来。
+    """
+    warnings: List[str] = []
+    entries = [e for e in (whitelist.get("entries") or [])
+               if str(e.get("template_id") or "") == ident["id"]]
+    if not entries:
+        return warnings
+    version = ident.get("version", "")
+    applied = set()
+    for e in entries:
+        want_ver = str(e.get("version") or "")
+        if want_ver and version and want_ver != version:
+            warnings.append(f"白名单条目 {ident['id']}@{want_ver} 与当前版本 {version} 不符，"
+                            "未应用（模板已升级，需复核失效槽是否已修复）")
+            continue
+        section, slots = str(e.get("section") or ""), list(e.get("slots") or [])
+        for s in slots:
+            for f in findings:
+                if f.section == section and f.slot_id == s:
+                    if f.status != MISSING:
+                        # 白名单只管「已确认失效」的槽；其余状态原样保留，
+                        # 该条目会在下面按「未命中」提示清理
+                        continue
+                    f.status = WAIVED
+                    f.evidence.append(f"已按审计白名单豁免（{e.get('decided_at', '')} 决定）："
+                                      f"{e.get('reason', '')}")
+                    applied.add((section, s))
+    for e in entries:
+        want_ver = str(e.get("version") or "")
+        if want_ver and version and want_ver != version:
+            continue
+        section = str(e.get("section") or "")
+        for s in (e.get("slots") or []):
+            if (section, s) not in applied:
+                warnings.append(f"白名单声明的 {section}.{s} 本次审计未判为失效"
+                                "（已修复或契约已变），建议删除该条，避免白名单长期空转")
+    if applied:
+        warnings.append(f"{len(applied)} 个槽按审计白名单豁免（模板包内未改），"
+                        f"依据见 {LITERAL_WHITELIST_NAME}")
+    return warnings
+
+
+def audit_slots(template_dir: str | Path, whitelist_path: Optional[str] = None) -> SlotAuditReport:
     """参数槽失效审计总入口。
 
     Args:
@@ -436,8 +529,16 @@ def audit_slots(template_dir: str | Path) -> SlotAuditReport:
             "guide.copy），本模板不做静态槽审计；建议以实渲验证槽位生效"
         )
 
+    ident = template_identity(root)
+    try:
+        warnings.extend(apply_literal_whitelist(
+            findings, ident, load_literal_whitelist(whitelist_path)))
+    except ValueError as exc:
+        warnings.append(str(exc))
+
     report = SlotAuditReport(
         template_dir=str(root),
+        template_id=ident["id"],
         contract_source=source.kind,
         contract_line_anchor=source.line_anchor,
         contract_path=source.path if source.kind == "contract-json" else None,
