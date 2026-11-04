@@ -39,6 +39,16 @@ class DeliverResult:
         }
 
 
+def _relative(path, base) -> str:
+    """manifest 里只写相对路径 —— 交付记录要能换机器照抄，不能钉死本机盘符。"""
+    if not path:
+        return ""
+    try:
+        return Path(path).resolve().relative_to(Path(base).resolve()).as_posix()
+    except (ValueError, TypeError, OSError):
+        return Path(path).name
+
+
 def deliver(manager: TaskManager, out_root: Optional[str] = None,
             archive: bool = True, day_dir: bool = True) -> DeliverResult:
     """归档 done 任务成品并生成 manifest。
@@ -83,7 +93,7 @@ def deliver(manager: TaskManager, out_root: Optional[str] = None,
         if archive:
             dest = arc_dir / src.name
             shutil.copy2(str(src), str(dest))
-            entry["archive_path"] = str(dest)
+            entry["archive_path"] = _relative(dest, root)
             entry["archived"] = True
             result.archived.append(entry)
         else:
@@ -92,9 +102,9 @@ def deliver(manager: TaskManager, out_root: Optional[str] = None,
 
     manifest = {
         "generated_at": result.generated_at,
-        "tasks_file": str(manager.tasks_file),
-        "out_root": result.out_root,
-        "archive_dir": str(arc_dir) if archive else None,
+        "tasks_file": _relative(manager.tasks_file, root),
+        "archive_dir": _relative(arc_dir, root) if archive else None,
+        "note": "路径均相对本 manifest 所在目录",
         "items": items,
         "summary": {
             "done": len(items),

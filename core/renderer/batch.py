@@ -127,6 +127,18 @@ class BatchScheduler:
         self.work_dir = work_dir
         self.resume = resume
 
+    @staticmethod
+    def _instance_tag(task: "BatchTask") -> str:
+        """渲染实例目录后缀：任务名（安全化）+ 随机尾。
+
+        并发渲染同一模板时必须各不相同，否则会互相解包/清理同一目录。
+        """
+        import re
+        import uuid
+        slug = re.sub(r"[^\w\u4e00-\u9fff.-]", "_", task.name or "")
+        slug = slug.strip("._")[:24] or "task"
+        return f"{slug}-{uuid.uuid4().hex[:6]}"
+
     def _run_task(self, task: BatchTask, progress_cb: Optional[Callable] = None) -> TaskResult:
         """执行单个任务（含重试与质量门）。"""
         result = TaskResult(
@@ -143,7 +155,8 @@ class BatchScheduler:
             try:
                 if progress_cb:
                     progress_cb(task, "render", attempts)
-                pipeline = RenderPipeline(task.template_path, work_dir=self.work_dir)
+                pipeline = RenderPipeline(task.template_path, work_dir=self.work_dir,
+                                          instance_tag=self._instance_tag(task))
                 render = pipeline.render(task.params, task.output_path, cleanup=True)
 
                 # 质量门（仅渲染成功时）
@@ -166,10 +179,22 @@ class BatchScheduler:
 
                 result.render = render
                 result.gate = gate_dict
-                result.error_stage = render.get("error_stage", "")
-                result.error = render.get("error", "")
-                ok = render.get("success", False) and gate_report is not None \
-                    and gate_report.status.value == "pass"
+                gate_status = gate_dict.get("status", "")
+                if not render.get("success", False):
+                    result.error_stage = render.get("error_stage", "") or "unknown"
+                    result.error = render.get("error", "") or "渲染失败（引擎未返回具体原因）"
+                    ok = False
+                else:
+                    # 质量门的 WARN 是「成品可用、但有提醒」，不能当失败；
+                    # 只有 FAIL 才算不合格，且必须把不合格项写进 error。
+                    ok = gate_status in ("pass", "warn")
+                    if not ok:
+                        result.error_stage = "gate"
+                        failed = [c.get("name", "?") for c in gate_dict.get("checks", [])
+                                  if c.get("status") == "fail"]
+                        result.error = ("成品检查未通过: "
+                                        + ("; ".join(failed) if failed
+                                           else (gate_status or "质量门无结果")))
                 result.success = ok
                 if ok:
                     result.elapsed_s = time.time() - t0

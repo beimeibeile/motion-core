@@ -72,7 +72,7 @@ def cmd_render(args):
             print(f"✅ 参数校验通过")
 
     # Step 3: Render
-    instance_dir = str(Path(output).parent / "_render_work" / Path(template).stem)
+    instance_dir = str(Path(output).parent / "_render_work")
     pipeline = RenderPipeline(template, instance_dir)
 
     def progress(stage, pct, msg):

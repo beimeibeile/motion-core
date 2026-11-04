@@ -61,6 +61,9 @@ class BatchQualityReport:
     env_warnings: list[str] = field(default_factory=list)
     template_checks: list[dict] = field(default_factory=list)
     contact_sheets: list[dict] = field(default_factory=list)
+    # 成品检查结论（质量门 WARN 不算失败，但必须在报告里看得见）
+    gate_summary: dict = field(default_factory=dict)
+    warn_ids: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         d = {
@@ -84,6 +87,8 @@ class BatchQualityReport:
                 "attempts": r.attempts, "stage": r.stage,
                 "error": r.error, "retryable": r.retryable,
             } for r in self.tasks],
+            "gate_summary": self.gate_summary,
+            "warn_ids": self.warn_ids,
         }
         if self.environment is not None:
             d["environment"] = self.environment
@@ -94,24 +99,45 @@ class BatchQualityReport:
             d["contact_sheets"] = self.contact_sheets
         return d
 
-    def to_markdown(self) -> str:
+    @staticmethod
+    def _display_path(path: str, base_dir: Optional[str]) -> str:
+        """报告给人看，路径按 base_dir 转相对 —— 报告要能随产物一起搬走。"""
+        if base_dir and path:
+            try:
+                return os.path.relpath(path, base_dir).replace(os.sep, "/")
+            except (ValueError, OSError):
+                pass
+        return path
+
+    def to_markdown(self, base_dir: Optional[str] = None) -> str:
         s = self.by_status
         lines = [
             "# 批量渲染质量报告",
             "",
             f"- 生成时间：{self.generated_at}",
-            f"- 任务文件：{self.tasks_file}",
+            f"- 任务文件：{self._display_path(self.tasks_file, base_dir)}",
             f"- 总数：{self.total}｜完成 {s.get('done', 0)}｜失败 "
             f"{s.get('failed', 0)}｜跳过 {s.get('skipped', 0)}｜"
             f"待执行 {s.get('ready', 0) + s.get('pending', 0)}",
             f"- 成功率：{self.success_rate:.0%}｜平均耗时："
             f"{self.avg_elapsed_s:.1f}s",
-            "",
-            "## 阶段分布",
-            "",
         ]
-        lines += [f"- {k}: {v}" for k, v in sorted(
-            self.stage_breakdown.items(), key=lambda x: -x[1])]
+        if self.stage_breakdown:
+            lines += ["", "## 阶段分布", ""]
+            lines += [f"- {k}: {v}" for k, v in sorted(
+                self.stage_breakdown.items(), key=lambda x: -x[1])]
+        if self.gate_summary:
+            lines += ["", "## 成品检查结论", ""]
+            label = {"pass": "全部通过", "warn": "通过但有提醒",
+                     "unchecked": "未复核（续跑跳过）"}
+            for key in ("pass", "warn", "unchecked"):
+                if self.gate_summary.get(key):
+                    lines.append(f"- {label[key]}: {self.gate_summary[key]}")
+            if self.warn_ids:
+                shown = (self.warn_ids if len(self.warn_ids) <= 3
+                         else self.warn_ids[:3] + [f"…共 {len(self.warn_ids)} 个"])
+                lines.append(f"- 有提醒项的任务：{'、'.join(shown)}")
+                lines.append("  （提醒不阻断出片，需人工确认；逐项明细见 JSON 报告）")
         if self.error_types:
             lines += ["", "## 异常分类", ""]
             for e in self.error_types:
@@ -137,9 +163,12 @@ class BatchQualityReport:
         if self.contact_sheets:
             lines += ["", "## contact sheet（O2 验收可视化附件）", ""]
             for c in self.contact_sheets:
-                status = c.get("error", c.get("frames", "?"))
-                lines.append(f"- {c['id']} → {c.get('path', '')} "
-                             f"({status})")
+                frames = c.get("error") or c.get("frames", "?")
+                path = c.get("path", "")
+                lines.append(f"- {c['id']}（{frames} 帧）")
+                if path and os.path.isfile(path):
+                    ref = (os.path.relpath(path, base_dir) if base_dir else path)
+                    lines += ["", f"![{c['id']}]({ref.replace(os.sep, '/')})"]
         if self.retryable_ids:
             lines += ["", f"## 可重试（{len(self.retryable_ids)} 个）",
                       "",
@@ -278,6 +307,12 @@ def build_report(manager: TaskManager,
     report.error_types = [
         {"stage": k[0], "count": v, "sample_error": err_sample[k]}
         for k, v in err_counts.most_common()]
+
+    # 成品检查结论：WARN 计入 done，但必须能被看见
+    gates = Counter(t.meta.get("gate_status") for t in done)
+    report.gate_summary = {k: v for k, v in gates.items() if k}
+    report.warn_ids = [t.id for t in done
+                       if t.meta.get("gate_status") == "warn"]
 
     if with_doctor:
         env = _collect_environment()

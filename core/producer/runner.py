@@ -120,6 +120,7 @@ class ProducerRunner:
                 summary.skipped_existing += 1
                 task.status = STATUS_DONE
                 task.meta["skipped_existing"] = True
+                task.meta.setdefault("gate_status", "unchecked")
                 task.error = ""
                 continue
             task.status = STATUS_DONE if result.success else STATUS_FAILED
@@ -127,6 +128,15 @@ class ProducerRunner:
             task.attempts = result.attempts
             task.meta["elapsed_s"] = result.elapsed_s
             task.meta["output"] = result.output_path
+            # 质量门结论必须落盘，否则报告只能看到「全绿」，
+            # 成品自带的提醒项（时钟风险/静止帧/无音轨等）会被掩盖。
+            gate = getattr(result, "gate", None) or {}
+            if gate.get("status"):
+                task.meta["gate_status"] = gate["status"]
+                task.meta["gate_warnings"] = [
+                    c.get("name", "") for c in gate.get("checks", [])
+                    if c.get("status") == "warn"
+                ]
             if not result.success:
                 task.meta["stage"] = result.error_stage
             if result.success:

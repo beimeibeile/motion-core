@@ -2,6 +2,7 @@
 
 import json
 import subprocess
+import uuid
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -17,9 +18,17 @@ class RenderPipeline:
         result = pipeline.render(params={"title": "Hello"}, output_path="out.mp4")
     """
 
-    def __init__(self, template_path: str, work_dir: str = None):
+    def __init__(self, template_path: str, work_dir: str = None,
+                 instance_tag: str = None):
+        """instance_tag: 渲染实例目录后缀。
+
+        默认随机生成。同一模板被多个任务并发渲染时，若共用 `_render_work/<模板名>`
+        会互相解包/清理同一目录（WinError 145 目录非空、WinError 5 拒绝访问），
+        因此每个渲染实例必须独占一个工作目录。
+        """
         self.template_path = Path(template_path).resolve()
         self.work_dir = Path(work_dir) if work_dir else self.template_path.parent / "_render_work"
+        self.instance_tag = instance_tag or uuid.uuid4().hex[:8]
         self.format = detect_format(template_path)
         self.template_info = parse_template(template_path)
 
@@ -38,7 +47,8 @@ class RenderPipeline:
             dict with keys: success, output_path, format, width, height, fps,
                            duration_s, elapsed_s, error (if failed)
         """
-        instance_dir = self.work_dir / self.template_path.stem
+        # 每个渲染实例独占目录（并发安全）
+        instance_dir = self.work_dir / f"{self.template_path.stem}-{self.instance_tag}"
         instance_dir.mkdir(parents=True, exist_ok=True)
 
         try:
