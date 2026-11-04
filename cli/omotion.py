@@ -244,6 +244,57 @@ def cmd_audit(args):
             shutil.rmtree(tmpdir, ignore_errors=True)
 
 
+def cmd_doctor(args):
+    """Environment self-check (P3 doctor 式环境自检)."""
+    from core.doctor import run_doctor
+    report = run_doctor(args.template)
+    if args.json:
+        print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
+    else:
+        print(report.to_markdown())
+    if not report.healthy:
+        sys.exit(1)
+
+
+def cmd_contact_sheet(args):
+    """Generate contact sheet: 12 frames + waveform + seconds scale (P3)."""
+    from core.quality_gate.contact_sheet import generate_contact_sheet
+    result = generate_contact_sheet(args.video, args.output or "", args.frames)
+    if "error" in result:
+        print(f"❌ {result['error']}", file=sys.stderr)
+        sys.exit(1)
+    print(f"✅ contact sheet: {result['output']}")
+    print(f"   帧数 {result['frames']} · {result['video']} · "
+          f"{result['duration']}s · 波形 {'有' if result['waveform'] else '无'}")
+    print(f"   {result['width']}x{result['height']}")
+
+
+def cmd_lint(args):
+    """Strict template lint with line:col errors (P3 严格解析)."""
+    target = args.template
+    tmpdir = None
+    try:
+        if target.lower().endswith(".motion") or Path(target).is_file():
+            import tempfile
+            import zipfile
+            tmpdir = tempfile.mkdtemp(prefix="omotion_lint_")
+            with zipfile.ZipFile(target) as z:
+                z.extractall(tmpdir)
+            target = tmpdir
+        from core.template_parser.strict import lint_template
+        report = lint_template(target)
+        if args.json:
+            print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
+        else:
+            print(report.to_markdown())
+        if not report.healthy:
+            sys.exit(1)
+    finally:
+        if tmpdir:
+            import shutil
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="omotion",
@@ -272,6 +323,26 @@ def main():
     audit_p.add_argument("template", help="Path to .motion or template instance dir")
     audit_p.add_argument("--json", action="store_true", help="Output JSON report")
 
+    # doctor
+    doctor_p = subparsers.add_parser(
+        "doctor", help="Environment self-check: node/ffmpeg/Chrome/template (P3)")
+    doctor_p.add_argument("template", nargs="?",
+                         help="Optional template dir to also check integrity")
+    doctor_p.add_argument("--json", action="store_true", help="Output JSON report")
+
+    # contact-sheet
+    cs_p = subparsers.add_parser(
+        "contact-sheet", help="Generate contact sheet: 12 frames + waveform + scale (P3)")
+    cs_p.add_argument("video", help="Path to rendered video")
+    cs_p.add_argument("-o", "--output", help="Output PNG path")
+    cs_p.add_argument("-n", "--frames", type=int, default=12, help="Frame count (default 12)")
+
+    # lint
+    lint_p = subparsers.add_parser(
+        "lint", help="Strict template structure lint with line:col errors (P3)")
+    lint_p.add_argument("template", help="Path to .motion or template instance dir")
+    lint_p.add_argument("--json", action="store_true", help="Output JSON report")
+
     # validate
     validate_p = subparsers.add_parser("validate", help="Validate template and params")
     validate_p.add_argument("template", help="Path to .motion template")
@@ -294,6 +365,9 @@ def main():
         "batch": cmd_batch,
         "probe": cmd_probe,
         "audit": cmd_audit,
+        "doctor": cmd_doctor,
+        "contact-sheet": cmd_contact_sheet,
+        "lint": cmd_lint,
     }
     commands[args.command](args)
 

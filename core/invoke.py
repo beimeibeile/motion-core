@@ -20,6 +20,7 @@ ai-video-editor 的 CapabilityRegistry 通过 entry_point 调用本模块的 inv
 """
 
 import logging
+import os
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
@@ -610,3 +611,51 @@ def _handle_slot_audit(template_dir: str, **kwargs) -> Dict[str, Any]:
     """
     from core.audit import audit_slots
     return audit_slots(template_dir).to_dict()
+
+
+@_register("motion_doctor")
+def _handle_doctor(template_dir: Optional[str] = None, **kwargs) -> Dict[str, Any]:
+    """环境自检（OpenFilm P3 借鉴）：node/ffmpeg/Chrome/模板完整性。
+
+    Args:
+        template_dir: 可选模板目录（附加模板完整性检查）
+
+    Returns:
+        doctor 报告 dict（healthy/summary/environment/template）
+    """
+    from core.doctor import run_doctor
+    return run_doctor(template_dir).to_dict()
+
+
+@_register("motion_contact_sheet")
+def _handle_contact_sheet(output_path: str, out_path: Optional[str] = None,
+                          n: int = 12, **kwargs) -> Dict[str, Any]:
+    """contact sheet 生成（OpenFilm P3 借鉴）：12 帧 + 波形 + 秒刻度。
+
+    Args:
+        output_path: 成片视频路径
+        out_path: 输出 PNG 路径（缺省为 <视频名>.contact-sheet.png）
+        n: 帧数（默认 12）
+
+    Returns:
+        结果 dict（output/frames/video/duration/has_audio/waveform）
+    """
+    from core.quality_gate.contact_sheet import generate_contact_sheet
+    if not out_path:
+        base, _ = os.path.splitext(output_path)
+        out_path = f"{base}.contact-sheet.png"
+    return generate_contact_sheet(output_path, out_path, n)
+
+
+@_register("motion_lint")
+def _handle_lint(template_dir: str, **kwargs) -> Dict[str, Any]:
+    """模板结构 lint（OpenFilm P3 借鉴）：严格解析 + 行号报错。
+
+    Args:
+        template_dir: 模板目录（或 .motion 解包目录）
+
+    Returns:
+        lint 报告 dict（healthy/summary/findings）
+    """
+    from core.template_parser.strict import lint_template
+    return lint_template(template_dir).to_dict()
