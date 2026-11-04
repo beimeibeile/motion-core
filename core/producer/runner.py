@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from .task_manager import TaskManager, ProducerTask, STATUS_READY, \
-    STATUS_RUNNING, STATUS_DONE, STATUS_FAILED
+    STATUS_RUNNING, STATUS_DONE, STATUS_FAILED, template_stem
 from ..renderer.batch import BatchScheduler, BatchTask
 
 
@@ -98,7 +98,7 @@ class ProducerRunner:
                 continue
             out = self.mgr.resolve_output(t)
             if not out:
-                out = str(Path(t.template).stem + ".mp4")
+                out = template_stem(t.template) + ".mp4"
             t.status = STATUS_RUNNING
             t.error = ""
             batch_tasks.append(BatchTask(str(path), t.params, out, name=t.id))

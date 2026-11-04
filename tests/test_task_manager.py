@@ -21,6 +21,7 @@ from core.producer import (
     STATUS_SKIPPED,
     STATUS_PENDING,
 )
+from core.producer.task_manager import template_stem
 
 
 @pytest.fixture
@@ -44,6 +45,21 @@ def _write_csv(path: Path, rows: list[dict]) -> Path:
 
 
 class TestTaskManagerCRUD:
+    def test_template_stem_keeps_version_suffix(self):
+        """不带 .motion 扩展名时不能把版本号当扩展名砍掉。"""
+        assert template_stem("纸面透视_口播讲解_横屏_v2.7.21-alpha.8") == \
+            "纸面透视_口播讲解_横屏_v2.7.21-alpha.8"
+        assert template_stem("纸面透视_横屏_v2.7.21-alpha.8.motion") == \
+            "纸面透视_横屏_v2.7.21-alpha.8"
+        assert template_stem(r"D:\tpl\现代图文_v2.7.18.motion") == "现代图文_v2.7.18"
+
+    def test_add_name_and_id_keep_version(self, manager):
+        """任务 name 与 id 都要保留版本号；长名截断时保留尾部而不是只留前缀。"""
+        t = manager.add("纸面透视_口播讲解_横屏_v2.7.21-alpha.8")
+        assert t.name == "纸面透视_口播讲解_横屏_v2.7.21-alpha.8"
+        assert "alpha_8" in t.id
+        assert t.id.endswith("-001")
+
     def test_add_list_get(self, manager):
         from conftest import standard_params
         t = manager.add("test_standard", standard_params(), output="a.mp4")
@@ -496,6 +512,85 @@ class TestTemplateIndex:
         assert res["layout_count"] == 1
         assert res["templates"][0]["aspect"] == "竖屏"
         assert "name" in res["templates"][0]
+
+    # ---- 渲染管线探测（避免选出本地跑不通的模板） ----
+
+    @staticmethod
+    def _make_pkg(path, entries: dict):
+        """按 {zip 内路径: 文本} 生成真实 .motion（zip）包。"""
+        import zipfile
+        with zipfile.ZipFile(path, "w") as z:
+            for name, content in entries.items():
+                z.writestr(name, content)
+
+    def test_pipeline_adapter_detected(self, tmp_path):
+        d = tmp_path / "tpl_adapter"
+        d.mkdir()
+        pkg = d / "科技控制台_口播讲解_横屏_v2.7.20.motion"
+        self._make_pkg(pkg, {
+            "motion.json": '{"runtime": {"profile": "kinetic-user-core/1"}}',
+            "adapter.py": "# adapter",
+        })
+        idx = TemplateIndex(str(d))
+        p = idx.profiles[0]
+        assert p.probed is True
+        assert p.pipeline == "adapter"
+        assert p.runtime == "kinetic-user-core/1"
+        assert p.renderable is True
+
+    def test_pipeline_motion_mjs_detected(self, tmp_path):
+        d = tmp_path / "tpl_mjs"
+        d.mkdir()
+        pkg = d / "现代图文_口播讲解_横屏_v2.7.18.motion"
+        self._make_pkg(pkg, {
+            "motion.json": '{"runtime": {"profile": "motiongit-host/1"}}',
+            "assistant/motion.mjs": "// runtime",
+            "personal/motiongit.key.json": "{}",
+        })
+        idx = TemplateIndex(str(d))
+        p = idx.profiles[0]
+        assert p.pipeline == "motion-mjs"
+        assert p.format == "personal-download-v1"
+        assert p.renderable is True
+
+    def test_no_pipeline_excluded_from_match(self, tmp_path):
+        """开包成功但两个渲染入口都没有 → 视为不可渲染，默认不推荐。"""
+        d = tmp_path / "tpl_dead"
+        d.mkdir()
+        dead = d / "现代图文_口播讲解_横屏_v1.0.0.motion"
+        self._make_pkg(dead, {"motion.json": '{"runtime": {}}'})
+        idx = TemplateIndex(str(d))
+        p = idx.profiles[0]
+        assert p.probed is True and p.pipeline == "unknown"
+        assert p.renderable is False
+        assert idx.match(aspect="横屏", voiceover=True) == []
+        assert len(idx.match(aspect="横屏", voiceover=True,
+                             renderable_only=False)) == 1
+
+    def test_unprobed_package_not_excluded(self, tmp_path):
+        """无法开包探测（占位/损坏文件）时不排除候选，避免误杀。"""
+        d = tmp_path / "tpl_raw"
+        d.mkdir()
+        (d / "现代图文_口播讲解_横屏_v1.0.0.motion").write_bytes(b"x")
+        idx = TemplateIndex(str(d))
+        p = idx.profiles[0]
+        assert p.probed is False
+        assert p.renderable is True
+
+    def test_pipeline_summary_counts(self, tmp_path):
+        d = tmp_path / "tpl_mix"
+        d.mkdir()
+        self._make_pkg(d / "酷炫科技风_口播讲解_横屏_v0.2.7.motion",
+                       {"motion.json": '{"runtime": {"profile": "kinetic-user-core/1"}}',
+                        "adapter.py": "#"})
+        self._make_pkg(d / "现代图文_口播讲解_竖屏_v2.7.18.motion",
+                       {"motion.json": '{"runtime": {"profile": "motiongit-host/1"}}',
+                        "assistant/motion.mjs": "//"})
+        idx = TemplateIndex(str(d))
+        summary = idx.pipeline_summary()
+        assert summary["adapter|kinetic-user-core/1"] == 1
+        assert summary["motion-mjs|motiongit-host/1"] == 1
+        assert idx.renderable_count == 2 and idx.locked_count == 0
 
 
 class TestBatchReport:

@@ -24,10 +24,16 @@ sys.path.insert(0, "/path/to/motion-core")
 | 模块 | 导入路径 | 核心类/函数 |
 |------|----------|-------------|
 | 模板解析 | `core.template_parser` | `detect_format()`, `parse_template()`, `TemplateInfo` |
+| 严格校验 | `core.template_parser.strict` | `strict_json_load()`, `lint_template()`, `LintReport` |
 | 渲染引擎 | `core.renderer` | `RenderPipeline`, `StandardRenderEngine`, `PersonalRenderEngine`, `RenderError` |
 | 质量门 | `core.quality_gate` | `QualityGate`, `QualityReport`, `CheckResult`, `CheckStatus` |
-| 参数管理 | `core.param_manager` | `ParamSchema`, `PresetManager` |
-| CLI | `cli.omotion` | `main()` |
+| 抽帧图 | `core.quality_gate.contact_sheet` | `probe_media()`, `generate_contact_sheet()`, `compose_contact_sheet()` |
+| 参数管理 | `core.param_manager` | `ParamSchema`, `PresetManager`, `build_standard_params()` |
+| 需求处理 | `core.param_manager.requirement_adapter` | `plan_requirement()`, `build_requirement()` |
+| 批量生产 | `core.producer` | `TaskManager`, `TemplateIndex`, `BatchQualityReport`, `build_report()`, `deliver()` |
+| 环境自检 | `core.doctor` | `run_doctor()`, `DoctorReport`, `DoctorItem`, `check_template()` |
+| 统一入口 | `core.invoke` | `invoke(capability, **kwargs)`（17 个能力） |
+| CLI | `cli.omotion` | `main()`（render/inspect/validate/probe/audit/doctor/contact-sheet/lint/batch） |
 
 ---
 
@@ -329,7 +335,72 @@ loaded = pm.load("template-001", "short-video")
 
 ---
 
-## 5. CLI — 命令行
+## 5. doctor — 环境自检（P3）
+
+```python
+from core.doctor import run_doctor, check_template
+
+report = run_doctor()                    # 检查 node / ffmpeg / ffprobe / Chrome
+report.to_dict()  # {"summary": {"environment": {"ok": 4, "warn": 0, "missing": 0}}, "environment": [...], "healthy": True}
+# 注意：summary 是嵌套结构（summary.environment），不是平铺的 ok/warn/missing
+
+report = run_doctor(template_path="t.motion")   # 追加模板结构检查
+```
+
+`check_template(path)` 单独检查单个模板（等价 `omotion doctor --template`）。
+doctor 只做**存在性**检查，不校验 ffmpeg 版本号是否满足 v2 解析正则。
+
+---
+
+## 6. strict — 严格模板 lint（P3）
+
+```python
+from core.template_parser.strict import lint_template, strict_json_load
+
+report = lint_template("t.motion")   # .motion(zip) 或解包目录均可
+report.errors, report.warnings       # 元素含 file / line / column 定位
+strict_json_load(text, filename=...) # 非法 JSON 抛带 文件:行:列 的异常
+```
+
+规则：必需文件 `motion.json / params.schema.json / guide.json`；必需字段
+`id / name / version / runtime`（`motion.json` 顶层与 `template` 子对象合并校验）；
+可选契约 7 项；`native/` 或 `adapter` 缺失仅 warn。
+
+---
+
+## 7. contact_sheet — 成片抽帧图（P3）
+
+```python
+from core.quality_gate.contact_sheet import generate_contact_sheet
+
+png = generate_contact_sheet("out.mp4", "out.contact-sheet.png", frames=12)
+```
+
+输出：标题 + 4 列帧网格（带 `t=mm:ss` 时间戳）+ 波形条（#4a7dff）+ 秒刻度。
+`probe_media()` 返回时长/分辨率/帧率/音轨信息，供报告复用。
+
+---
+
+## 8. producer — 批量生产
+
+| 类/函数 | 说明 |
+|---------|------|
+| `TaskManager(tasks_file, template_dir, output_dir)` | 任务 CRUD + `_validate_task` 预校验（模板存在性 / 参数 schema / **渲染管线探测**） |
+| `TaskManager.add/update/remove/list_tasks/status_summary` | 任务操作与汇总 |
+| `TemplateIndex(template_dir)` | 文件名 → (类型/用途/画幅/版本) + **包内管线探测**（adapter / motion-mjs / unknown） |
+| `TemplateIndex.match(topic, duration_s, aspect, voiceover, top, renderable_only=True)` | 智能选型；`pipeline_summary()` 给出产能结构 |
+| `BatchQualityReport` / `build_report(manager, with_doctor, with_lint, with_contact_sheet, contact_sheet_frames)` | 批量质量报告（JSON + Markdown，含环境/lint/抽帧三节） |
+| `deliver(manager, out_root, archive, day_dir)` | done 成品归档 + manifest |
+
+`_validate_task` 对"开包成功但既无 `adapter.py` 也无 `assistant/motion.mjs`"的任务
+直接置 `skipped` 并写原因，不再进入渲染队列；探测失败（无法开包）不做排除。
+
+`TaskManager._load()` 期望 tasks.json **顶层是数组**，非法 JSON 会静默容错成空列表
+（报告显示 total=0）——构造任务文件请用 `json.dump`。
+
+---
+
+## 9. CLI — 命令行
 
 ```bash
 python cli/omotion.py <command> [options]
@@ -340,7 +411,12 @@ python cli/omotion.py <command> [options]
 | `render <template> --params <file> --output <mp4>` | 全流程渲染（解析→校验→渲染→质检） |
 | `inspect <template>` | 查看模板元数据 |
 | `validate <template> --params <file>` | 校验模板和参数 |
-| `batch <tasklist.json>` | 批量渲染（Phase 1） |
+| `probe <template>` | 运行时能力表（entry / profile / 是否支持参数化预览） |
+| `audit <template>` | copy-contract 参数槽失效审计 |
+| `doctor [--template <t>]` | 环境自检（node/ffmpeg/ffprobe/Chrome/模板） |
+| `contact-sheet <mp4> [-n 帧数]` | 成片抽帧 contact sheet |
+| `lint <template>` | 严格模板结构 lint |
+| `batch <tasks.json> [-o report.json] [--markdown] [--no-doctor/--no-lint/--no-contact-sheet]` | 批量质量报告 |
 
 ---
 
@@ -372,6 +448,8 @@ except RenderError as e:
 
 ## 已知限制
 
-- **v2 运行时**：`split_root.py` / `canvas_split_root.py` 在 Windows 上有符号链接 bug，PersonalRenderEngine 仅支持 v1 运行时（motion.mjs + --workflow）
+- **v2 运行时**：`split_root.py` / `canvas_split_root.py` 在 Windows 上有符号链接 bug；`PersonalRenderEngine` 已支持 v1（motion.mjs + `--workflow motion-kit`）与 v2（auto-route，由 `assistant/BUILD.json` 的 `split-root-v1` profile 判定）自动路由
 - **standard 格式**：输出文件不可已存在（adapter.py 拒绝覆盖），核心库自动清理
-- **personal 格式**：render 输出路径必须在 instance_dir 内，核心库自动处理后复制到目标路径
+- **personal 格式**：render 输出路径必须在 instance_dir 内，核心库自动处理后复制到目标路径；解密由包内 `motion.mjs` 运行时完成，不需要额外 API Key
+- **可渲染性口径**：`detect_format()`（是否有 `personal/motiongit.key.json`）只判格式，**不等于可渲染性**；可渲染性看包内是否存在 `adapter.py` 或 `assistant/motion.mjs`
+- **prepare ≠ render**：`prepare()` 通过只证明结构与运行时入口可用，成片成功率仍需逐模板实渲验证

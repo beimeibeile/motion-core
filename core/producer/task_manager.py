@@ -92,6 +92,17 @@ class ProducerTask:
         return asdict(self)
 
 
+def template_stem(template: str) -> str:
+    """模板名去扩展名。
+
+    只剥离 `.motion` 后缀：以往直接用 Path(...).stem，若调用方传的是
+    不带扩展名的模板名（`xx_v2.7.21-alpha.8`），Path.stem 会把 `.8` 当成扩展名
+    砍掉，导致任务名/输出名丢版本号。
+    """
+    name = Path(template).name
+    return name[: -len(".motion")] if name.lower().endswith(".motion") else name
+
+
 class TaskManager:
     """任务列表管理器（JSON 持久化）。
 
@@ -169,7 +180,7 @@ class TaskManager:
             template=template,
             params=params or {},
             output=output,
-            name=name or Path(template).stem,
+            name=name or template_stem(template),
             status=STATUS_PENDING,
             created_at=_now(),
             updated_at=_now(),
@@ -313,6 +324,12 @@ class TaskManager:
             return
         task.meta["template_path"] = str(path)
         task.meta["template_format"] = self._detect_format(path)
+        task.meta["template_pipeline"] = self._detect_pipeline(path)
+        if task.meta["template_pipeline"] == "unknown":
+            task.status = STATUS_SKIPPED
+            task.error = ("模板无本地渲染入口（既无 adapter.py 也无 assistant/motion.mjs）: "
+                          f"{task.template}")
+            return
 
         # 参数 schema 预校验（standard 明文；personal 加密无法提取 → 跳过）
         schema = self._extract_schema(path)
@@ -332,6 +349,21 @@ class TaskManager:
                 if "personal/motiongit.key.json" in z.namelist():
                     return "personal-download-v1"
             return "standard"
+        except Exception:
+            return "unknown"
+
+    @staticmethod
+    def _detect_pipeline(path: Path) -> str:
+        """探测包内本地渲染入口：adapter.py / assistant/motion.mjs / unknown。"""
+        try:
+            import zipfile
+            with zipfile.ZipFile(path, "r") as z:
+                names = z.namelist()
+            if "adapter.py" in names:
+                return "adapter"
+            if "assistant/motion.mjs" in names:
+                return "motion-mjs"
+            return "unknown"
         except Exception:
             return "unknown"
 
@@ -382,5 +414,8 @@ class TaskManager:
 
     def _next_id(self, template: str) -> str:
         seq = len(self.tasks) + 1
-        stem = re.sub(r"[^\w\u4e00-\u9fff-]", "_", Path(template).stem)[:24]
+        stem = re.sub(r"[^\w\u4e00-\u9fff-]", "_", template_stem(template))
+        # 长名保留头尾，避免只留前缀丢失版本号（如 alpha.8 被截成 alp）
+        if len(stem) > 40:
+            stem = f"{stem[:26]}_{stem[-12:]}"
         return f"{stem}-{seq:03d}"

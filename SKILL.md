@@ -170,6 +170,15 @@ capabilities:
 | `producer_deliver` | 成品交付与归档（Phase 3 I6） | 5 | python |
 | `producer_requirement_plan` | 模板需求智能处理：台词→语义阶段→场景映射→缺项阻塞（P0/I8 前置） | 5 | python |
 | `producer_requirement_build` | 模板需求智能处理：台词→契约合法参数（缺项阻塞不出参数） | 5 | python |
+| `motion_runtime_probe` | 探测模板运行时能力表（entry/profile/是否支持参数化预览，P0-a） | 5 | python |
+| `motion_slot_audit` | copy-contract 参数槽失效审计（role 契约，P2） | 5 | python |
+| `motion_doctor` | 环境自检：node/ffmpeg/ffprobe/Chrome + 模板结构（P3） | 5 | python |
+| `motion_contact_sheet` | 成片抽帧 contact sheet（帧网格+时间戳+波形+秒刻度，P3） | 5 | python |
+| `motion_lint` | 严格模板结构 lint（文件:行:列 错误定位，P3） | 5 | python |
+
+> 质量门内已并入 P1 确定性/排版/混音检查；`producer_batch_report` 默认带
+> doctor 环境自检、逐任务 lint、done 成片 contact sheet（可用 `with_*` 开关关闭）。
+> 调用前可先 `motion_runtime_probe` 判断模板属于 adapter 管线还是 motion.mjs 管线。
 
 ## 集成方式
 
