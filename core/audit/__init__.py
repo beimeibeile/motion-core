@@ -1,4 +1,4 @@
-"""模板审计模块 —— P2 参数槽失效审计（copy-contract 维护 / role 契约）。"""
+"""模板审计模块 —— P2 参数槽失效审计（多源契约：显式契约 / 生态 schema / guide 声明）。"""
 
 from core.audit.slot_audit import (
     audit_slots,
@@ -17,6 +17,16 @@ from core.audit.slot_audit import (
     CONTRACT_ONLY,
     SCHEMA_ONLY,
 )
+from core.audit.contract_source import (
+    resolve_contract,
+    slots_from_content_schema,
+    slots_from_guide,
+    ContractSource,
+    KIND_CONTRACT,
+    KIND_CONTENT_SCHEMA,
+    KIND_GUIDE,
+    KIND_NONE,
+)
 
 __all__ = [
     "audit_slots",
@@ -34,4 +44,12 @@ __all__ = [
     "MISSING",
     "CONTRACT_ONLY",
     "SCHEMA_ONLY",
+    "resolve_contract",
+    "slots_from_content_schema",
+    "slots_from_guide",
+    "ContractSource",
+    "KIND_CONTRACT",
+    "KIND_CONTENT_SCHEMA",
+    "KIND_GUIDE",
+    "KIND_NONE",
 ]

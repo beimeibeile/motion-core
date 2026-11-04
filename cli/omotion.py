@@ -255,15 +255,18 @@ def cmd_audit(args):
         try:
             report = audit_slots(target)
         except ValueError as exc:
-            # 无 copy-contract 属正常状态（多数模板没有 copy 槽），不是错误
+            # 目录不存在等输入问题：不是审计结论，按跳过处理
             print(f"ℹ️ 跳过审计：{exc}")
             return
         if args.json:
             print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
         else:
             print(report.to_markdown())
-        if not report.healthy:
-            sys.exit(1)
+        if args.strict and report.contract_source == "none":
+            # strict 用在 CI：无契约来源视为未覆盖，明确失败而不是静默通过
+            sys.exit(3)
+        if report.healthy is False:
+            sys.exit(2 if args.strict else 1)
     finally:
         if tmpdir:
             import shutil
@@ -348,6 +351,9 @@ def main():
         "audit", help="Audit copy-contract slot health (P2 参数槽失效审计)")
     audit_p.add_argument("template", help="Path to .motion or template instance dir")
     audit_p.add_argument("--json", action="store_true", help="Output JSON report")
+    audit_p.add_argument(
+        "--strict", action="store_true",
+        help="CI mode: no contract source -> exit 3; unhealthy -> exit 2")
 
     # doctor
     doctor_p = subparsers.add_parser(

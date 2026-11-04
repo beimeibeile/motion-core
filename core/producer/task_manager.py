@@ -87,6 +87,7 @@ class ProducerTask:
     created_at: str = ""
     updated_at: str = ""
     meta: dict = field(default_factory=dict)
+    materials: list = field(default_factory=list)   # 引用的 04-素材库 material_id
 
     def to_dict(self) -> dict:
         return asdict(self)

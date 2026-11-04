@@ -529,7 +529,7 @@ def _handle_producer_deliver(tasks_file: str = "tasks.json",
 
     Args:
         tasks_file / template_dir / output_dir: 任务上下文
-        out_root: 输出根目录（默认 manager.output_dir 或 03-渲染输出）
+        out_root: 输出根目录（默认 manager.output_dir 或 07-输出成品）
         archive: 复制成品到 成品/{YYYYMMDD}/（默认 True；False 仅 manifest）
 
     Returns:

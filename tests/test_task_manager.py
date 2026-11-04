@@ -49,9 +49,21 @@ class TestTaskManagerCRUD:
         """不带 .motion 扩展名时不能把版本号当扩展名砍掉。"""
         assert template_stem("纸面透视_口播讲解_横屏_v2.7.21-alpha.8") == \
             "纸面透视_口播讲解_横屏_v2.7.21-alpha.8"
-        assert template_stem("纸面透视_横屏_v2.7.21-alpha.8.motion") == \
-            "纸面透视_横屏_v2.7.21-alpha.8"
+        assert template_stem("纸面透视_口播讲解_横屏_v2.7.21-alpha.8.motion") == \
+            "纸面透视_口播讲解_横屏_v2.7.21-alpha.8"
         assert template_stem(r"D:\tpl\现代图文_v2.7.18.motion") == "现代图文_v2.7.18"
+
+    def test_task_materials_field_roundtrip(self, tmp_path: Path):
+        """任务可携带 materials 引用（04-素材库 校验用），老任务无此字段也能加载。"""
+        f = tmp_path / "tasks.json"
+        f.write_text(json.dumps([
+            {"id": "with-mat", "template": "t1", "materials": ["M0001", "M0002"]},
+            {"id": "legacy", "template": "t2"},
+        ], ensure_ascii=False), encoding="utf-8")
+        mgr = TaskManager(str(f))
+        got = {t.id: t for t in mgr.list_tasks()}
+        assert got["with-mat"].materials == ["M0001", "M0002"]
+        assert got["legacy"].materials == []
 
     def test_add_name_and_id_keep_version(self, manager):
         """任务 name 与 id 都要保留版本号；长名截断时保留尾部而不是只留前缀。"""

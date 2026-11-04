@@ -227,20 +227,29 @@ def test_audit_healthy_when_no_issue(tmp_path: Path):
     assert report.summary[FOUND] == 1
 
 
-def test_audit_no_contract_raises(tmp_path: Path):
+def test_audit_no_contract_reports_none(tmp_path: Path):
+    """无任何契约来源：不 raise，明确报 none 且健康状态未知。"""
     root = tmp_path / "noc"
     root.mkdir()
     (root / "film.js").write_text("const x = 1;", encoding="utf-8")
-    with pytest.raises(ValueError, match="copy-contract.json"):
-        audit_slots(root)
+    report = audit_slots(root)
+    assert report.contract_source == "none"
+    assert report.verified is False
+    assert report.healthy is None
+    assert report.total_slots == 0
 
 
-def test_audit_no_source_raises(tmp_path: Path):
+def test_audit_contract_without_source_is_unknown(tmp_path: Path):
+    """有契约但无渲染源码：登记槽、不判健康（没校验过不等于健康）。"""
     root = tmp_path / "nosrc"
     root.mkdir()
     _write_json(root / "copy-contract.json", {"slots": {"hero": {"title": {}}}})
-    with pytest.raises(ValueError, match="渲染源码"):
-        audit_slots(root)
+    report = audit_slots(root)
+    assert report.contract_source == "contract-json"
+    assert report.total_slots == 1
+    assert report.verified is False
+    assert report.healthy is None
+    assert any("渲染源码" in w for w in report.warnings)
 
 
 def test_report_to_dict_and_markdown(audit_fixture: Path):

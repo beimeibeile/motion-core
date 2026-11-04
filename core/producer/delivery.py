@@ -45,7 +45,7 @@ def deliver(manager: TaskManager, out_root: Optional[str] = None,
 
     Args:
         manager: TaskManager（done 任务的 resolve_output 指向成品文件）
-        out_root: 输出根目录（默认 manager.output_dir 或 "03-渲染输出"）
+        out_root: 输出根目录（默认 manager.output_dir 或 "07-输出成品"）
         archive: 复制成品到归档目录（False 仅生成 manifest）
         day_dir: 归档按日期分目录 成品/{YYYYMMDD}/
 
@@ -54,7 +54,7 @@ def deliver(manager: TaskManager, out_root: Optional[str] = None,
     """
     result = DeliverResult(generated_at=time.strftime("%Y-%m-%d %H:%M:%S"))
     root = Path(out_root) if out_root else (
-        manager.output_dir or Path(manager.tasks_file).parent / "03-渲染输出")
+        manager.output_dir or Path(manager.tasks_file).parent / "07-输出成品")
     root.mkdir(parents=True, exist_ok=True)
     result.out_root = str(root)
 

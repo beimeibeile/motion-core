@@ -65,6 +65,9 @@ class SlotAuditReport:
     total_slots: int = 0
     findings: List[SlotFinding] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
+    contract_source: str = "none"       # contract-json / ecosystem-content-schema / guide-declared / none
+    contract_line_anchor: bool = False  # 该来源是否支持行锚（决定能否判 moved）
+    verified: bool = False              # 是否真的做了源码校验（只登记 ≠ 审过）
 
     @property
     def summary(self) -> Dict[str, int]:
@@ -74,14 +77,23 @@ class SlotAuditReport:
         return counts
 
     @property
-    def healthy(self) -> bool:
-        """无 missing 与 contract_only 即视为健康（moved/schema_only 仅提示）。"""
+    def healthy(self) -> Optional[bool]:
+        """无 missing 与 contract_only 即视为健康（moved/schema_only 仅提示）。
+
+        未真正校验（无来源 / 无源码 / 仅 param 级登记）时返回 None（未知），
+        不是 True —— 没审过不等于健康。
+        """
+        if self.contract_source == "none" or not self.verified:
+            return None
         return (self.summary.get(MISSING, 0) == 0
                 and self.summary.get(CONTRACT_ONLY, 0) == 0)
 
     def to_dict(self) -> Dict:
         return {
             "template_dir": self.template_dir,
+            "contract_source": self.contract_source,
+            "contract_line_anchor": self.contract_line_anchor,
+            "verified": self.verified,
             "contract_path": self.contract_path,
             "schema_path": self.schema_path,
             "source_files": self.source_files,
@@ -96,6 +108,13 @@ class SlotAuditReport:
         lines: List[str] = []
         lines.append("## 参数槽失效审计报告")
         lines.append("")
+        _KIND_LABEL = {
+            "contract-json": "A 级 · 显式契约 copy-contract.json（含行锚）",
+            "ecosystem-content-schema": "B 级 · 生态 content.schema.json fields[]（标识存在性，行号经实测不可靠不启用行锚）",
+            "guide-declared": "C 级 · guide/schema 声明的 param 级槽（弱证据，无源码锚）",
+            "none": "D 级 · 无契约来源（不做静态审计）",
+        }
+        lines.append(f"- 契约来源：**{_KIND_LABEL.get(self.contract_source, self.contract_source)}**")
         lines.append(f"- 模板目录：`{self.template_dir}`")
         if self.contract_path:
             lines.append(f"- 契约：`{self.contract_path}`")
@@ -133,8 +152,13 @@ class SlotAuditReport:
             for w in self.warnings:
                 lines.append(f"- {w}")
             lines.append("")
-        if self.healthy:
+        if self.healthy is True:
             lines.append("> ✅ 契约健康：无失效槽、无参数侧移除。")
+        elif self.healthy is None:
+            lines.append("> ⚠️ **健康状态未知**：未完成源码级校验"
+                         "（无契约来源 / 无渲染源码 / 仅 param 级声明三种情形之一）。"
+                         "该模板的槽位定义可能封装在受保护的运行时资产内；"
+                         "请以实渲验证（omotion render / batch）确认槽位生效。")
         else:
             lines.append("> ⚠️ 发现失效 / 未登记槽，**只报告不修改**，由模板作者决策。")
         return "\n".join(lines)
@@ -226,7 +250,10 @@ def _identifier_candidates(section: str, slot_id: str, meta: Dict) -> List[str]:
         if v:
             cands.append(v)
     cands.append(f"{section}.{slot_id}")
-    cands.append(slot_id)
+    # 裸 slot_id 兜底只在非严格模式启用：B 级（content.schema）的 id 是全名，
+    # 若也允许裸名兜底会被同 section 的兄弟槽（如 S15.text013）误命中，造成假阳
+    if not meta.get("strictIdentifier"):
+        cands.append(slot_id)
     return list(dict.fromkeys(cands))
 
 
@@ -247,13 +274,25 @@ def verify_slot_in_source(section: str, slot_id: str, meta: Dict,
     occurrences = meta.get("sourceOccurrences", 1)
     need = max(1, int(occurrences or 1))
 
+    # 若契约声明了具体源文件，优先在该文件内找（更准），未命中再回退全语料
+    scoped: Dict[str, str] = texts
+    src_file = meta.get("sourceFile")
+    if src_file:
+        matched = {k: v for k, v in texts.items()
+                   if k.endswith("/" + str(src_file)) or k.endswith(str(src_file))}
+        if matched:
+            scoped = matched
+
     cands = _identifier_candidates(section, slot_id, meta)
     ident: Optional[str] = None
     total_hits = 0
-    for c in cands:
-        hits = sum(len(re.findall(re.escape(c), t)) for t in texts.values())
-        if hits >= need:
-            ident, total_hits = c, hits
+    for pool in (scoped, texts) if scoped is not texts else (texts,):
+        for c in cands:
+            hits = sum(len(re.findall(re.escape(c), t)) for t in pool.values())
+            if hits >= need:
+                ident, total_hits = c, hits
+                break
+        if ident is not None:
             break
 
     if ident is None:
@@ -263,11 +302,11 @@ def verify_slot_in_source(section: str, slot_id: str, meta: Dict,
                         " → 槽已失效（标黄提示，不自动删）")
         return SlotFinding(slot_id, section, MISSING, evidence, meta)
 
-    # 2) 行锚判定
-    if source_line:
+    # 2) 行锚判定（仅当该来源支持行锚时才可能判 moved）
+    if source_line and meta.get("lineAnchor", True) is not False:
         line_hit = False
         line_anchor = False
-        for path, text in texts.items():
+        for path, text in scoped.items():
             lines = text.splitlines()
             if not (1 <= int(source_line) <= len(lines)):
                 continue
@@ -282,7 +321,8 @@ def verify_slot_in_source(section: str, slot_id: str, meta: Dict,
                             f"但第 {source_line} 行为代码行且未含标识 → 行号已偏移")
             return SlotFinding(slot_id, section, MOVED, evidence, meta)
 
-    evidence.append(f"源码命中：标识 '{ident}'（{total_hits} 次）"
+    scope_note = f"于 {src_file}" if src_file and scoped is not texts else "于源码"
+    evidence.append(f"{scope_note}命中：标识 '{ident}'（{total_hits} 次）"
                     + (f"，第 {source_line} 行匹配" if source_line else "（无行号约束）"))
     return SlotFinding(slot_id, section, FOUND, evidence, meta)
 
@@ -349,38 +389,64 @@ def audit_slots(template_dir: str | Path) -> SlotAuditReport:
     if not root.is_dir():
         raise ValueError(f"模板目录不存在: {root}")
 
-    contract_path = find_copy_contract(root)
-    if contract_path is None:
-        raise ValueError(
-            f"未找到 {CONTRACT_NAME}（该模板无 copy 槽契约，无需审计）")
+    # 多源解析：contract-json → ecosystem-content-schema → guide-declared → none
+    from core.audit.contract_source import resolve_contract
+    source = resolve_contract(root)
 
     sources = find_js_sources(root)
-    if not sources:
-        raise ValueError(f"未找到渲染源码（*.js），无法做源码引用校验: {root}")
-
     schema_path = find_schema(root)
-    texts = _source_text(sources)
+    texts = _source_text(sources) if sources else {}
+    warnings: List[str] = list(source.notes)
 
-    contract_slots = load_contract_slots(contract_path)
     findings: List[SlotFinding] = []
-    for section, slot_id, meta in contract_slots:
-        findings.append(verify_slot_in_source(section, slot_id, meta, texts))
-
-    schema_findings, warnings = compare_schema(contract_slots, schema_path)
-    findings.extend(schema_findings)
-
-    # 汇总提示
-    if contract_path and schema_path is None:
-        warnings.append("未找到 params.schema.json，仅完成源码引用校验")
+    verified = False
+    if source.kind == "contract-json" and source.slots and texts:
+        # A 级：显式契约，做源码引用校验 + params.schema copy 子树双向 diff
+        for section, slot_id, meta in source.slots:
+            findings.append(verify_slot_in_source(section, slot_id, meta, texts))
+        schema_findings, schema_warnings = compare_schema(source.slots, schema_path)
+        findings.extend(schema_findings)
+        warnings.extend(schema_warnings)
+        verified = True
+        if schema_path is None:
+            warnings.append("未找到 params.schema.json，仅完成源码引用校验")
+    elif source.kind == "ecosystem-content-schema" and source.slots and texts:
+        # B 级：content.schema 的 fields 是「上屏内容槽」，params.schema 的 copy 是
+        # 「参数树子树」，两者层级不同，不能互相 diff（否则 469 槽全被误判 contract_only）
+        for section, slot_id, meta in source.slots:
+            findings.append(verify_slot_in_source(section, slot_id, meta, texts))
+        verified = True
+        warnings.append(
+            "B 级来源不做 params.schema copy 子树比对：content 槽与参数树层级不同，"
+            "强对齐会制造假失效（实测会把 469 槽全判 contract_only）")
+    elif source.kind == "guide-declared":
+        # C 级：只有 param 级声明，没有源码锚 —— 只登记，不做源码校验
+        for section, slot_id, meta in source.slots:
+            findings.append(SlotFinding(slot_id, section, FOUND, [
+                "param 级声明存在（guide/schema 侧），未做源码锚校验（该来源无源码锚）"
+            ], meta))
+        warnings.append(
+            "C 级来源为 param 级声明，不含源码行锚，只核对参数是否仍被声明，"
+            "不判定槽在画面上是否仍生效")
+    elif source.slots and not texts:
+        warnings.append("未找到渲染源码（*.js），无法做源码引用校验，仅登记槽清单")
+    else:
+        warnings.append(
+            "无契约来源（未找到 copy-contract.json / content.schema.json 的 fields[] / "
+            "guide.copy），本模板不做静态槽审计；建议以实渲验证槽位生效"
+        )
 
     report = SlotAuditReport(
         template_dir=str(root),
-        contract_path=str(contract_path),
+        contract_source=source.kind,
+        contract_line_anchor=source.line_anchor,
+        contract_path=source.path if source.kind == "contract-json" else None,
         schema_path=str(schema_path) if schema_path else None,
         source_files=[str(p) for p in sources],
-        total_slots=len(contract_slots),
+        total_slots=len(source.slots),
         findings=findings,
         warnings=warnings,
+        verified=verified,
     )
     return report
 
