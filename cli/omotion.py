@@ -188,6 +188,36 @@ def cmd_batch(args):
     # TODO: Implement batch rendering in Phase 1
 
 
+def cmd_probe(args):
+    """Probe template runtime capabilities (P0-a runtime 能力表)."""
+    target = args.template
+    tmpdir = None
+    try:
+        if target.lower().endswith(".motion") or Path(target).is_file():
+            import tempfile
+            import zipfile
+            tmpdir = tempfile.mkdtemp(prefix="omotion_probe_")
+            with zipfile.ZipFile(target) as z:
+                z.extractall(tmpdir)
+            target = tmpdir
+        from core.runtime.capabilities import probe_runtime
+        r = probe_runtime(target)
+        print(f"🔍 runtime 能力表: {args.template}\n")
+        print(f"  kind:            {r['kind']}")
+        print(f"  render_entry:    {r['render_entry'] or '-'}")
+        print(f"  param_unit:      {r['param_unit']}")
+        print(f"  supports_t:      {r['supports_t']}")
+        print(f"  supports_preview:{r['supports_preview']}")
+        print(f"  clock_risk:      {r['clock_risk']}")
+        print(f"  audio_deps:      {r['audio_deps']}")
+        print(f"  entry_html:      {r['entry_html'] or '-'}")
+        print(f"  fps:             {r['fps']}")
+    finally:
+        if tmpdir:
+            import shutil
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="omotion",
@@ -205,6 +235,10 @@ def main():
     # inspect
     inspect_p = subparsers.add_parser("inspect", help="Inspect a .motion template")
     inspect_p.add_argument("template", help="Path to .motion template")
+
+    # probe
+    probe_p = subparsers.add_parser("probe", help="Probe template runtime capabilities")
+    probe_p.add_argument("template", help="Path to .motion or template instance dir")
 
     # validate
     validate_p = subparsers.add_parser("validate", help="Validate template and params")
@@ -226,6 +260,7 @@ def main():
         "inspect": cmd_inspect,
         "validate": cmd_validate,
         "batch": cmd_batch,
+        "probe": cmd_probe,
     }
     commands[args.command](args)
 

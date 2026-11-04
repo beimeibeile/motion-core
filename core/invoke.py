@@ -580,3 +580,18 @@ def _handle_requirement_build(catalog_path: str, script: str,
         "contentEvidence": result.content_evidence,
         "ownershipRefs": result.ownership_refs,
     }
+
+
+@_register("motion_runtime_probe")
+def _handle_runtime_probe(template_dir: str, **kwargs) -> Dict[str, Any]:
+    """模板 runtime 能力表（OpenFilm P0-a 借鉴）：静态探测逐帧直连能力。
+
+    Args:
+        template_dir: 模板实例目录（解包后的 core 或实例根目录）
+
+    Returns:
+        能力表 dict（kind/clock_risk/render_entry/param_unit/
+        supports_t/supports_preview/audio_deps/entry_html/fps）
+    """
+    from core.runtime.capabilities import probe_runtime
+    return probe_runtime(template_dir)
