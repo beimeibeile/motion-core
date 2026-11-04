@@ -252,7 +252,12 @@ def cmd_audit(args):
                 z.extractall(tmpdir)
             target = tmpdir
         from core.audit import audit_slots
-        report = audit_slots(target)
+        try:
+            report = audit_slots(target)
+        except ValueError as exc:
+            # 无 copy-contract 属正常状态（多数模板没有 copy 槽），不是错误
+            print(f"ℹ️ 跳过审计：{exc}")
+            return
         if args.json:
             print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
         else:

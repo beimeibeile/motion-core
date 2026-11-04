@@ -408,7 +408,7 @@ python cli/omotion.py <command> [options]
 
 | 命令 | 说明 |
 |------|------|
-| `render <template> --params <file> --output <mp4>` | 全流程渲染（解析→校验→渲染→质检） |
+| `render <template> --params <file> [--output <mp4>] [--preview]` | 全流程渲染（解析→校验→渲染→质检）；`--params` 必填，`--preview` 低分辨率预览 |
 | `inspect <template>` | 查看模板元数据 |
 | `validate <template> --params <file>` | 校验模板和参数 |
 | `probe <template>` | 运行时能力表（entry / profile / 是否支持参数化预览） |
@@ -416,7 +416,7 @@ python cli/omotion.py <command> [options]
 | `doctor [--template <t>]` | 环境自检（node/ffmpeg/ffprobe/Chrome/模板） |
 | `contact-sheet <mp4> [-n 帧数]` | 成片抽帧 contact sheet |
 | `lint <template>` | 严格模板结构 lint |
-| `batch <tasks.json> [-o report.json] [--markdown] [--no-doctor/--no-lint/--no-contact-sheet]` | 批量质量报告 |
+| `batch <tasks.json> [--json] [-o report.json] [--no-doctor|--no-lint|--no-contact-sheet] [--frames N]` | 批量质量报告（默认 Markdown 摘要，`--json` 出 JSON） |
 
 ---
 
