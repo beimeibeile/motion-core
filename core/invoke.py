@@ -595,3 +595,18 @@ def _handle_runtime_probe(template_dir: str, **kwargs) -> Dict[str, Any]:
     """
     from core.runtime.capabilities import probe_runtime
     return probe_runtime(template_dir)
+
+
+@_register("motion_slot_audit")
+def _handle_slot_audit(template_dir: str, **kwargs) -> Dict[str, Any]:
+    """参数槽失效审计（OpenFilm P2 借鉴）：copy-contract 维护 + role 契约。
+
+    Args:
+        template_dir: 模板实例目录（含 copy-contract.json 与渲染源码）
+
+    Returns:
+        审计报告 dict（summary/healthy/findings/warnings；
+        只报告不修改，失效槽不自动删）
+    """
+    from core.audit import audit_slots
+    return audit_slots(template_dir).to_dict()

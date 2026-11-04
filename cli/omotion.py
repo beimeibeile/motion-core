@@ -218,6 +218,32 @@ def cmd_probe(args):
             shutil.rmtree(tmpdir, ignore_errors=True)
 
 
+def cmd_audit(args):
+    """Audit copy-contract slot health (P2 参数槽失效审计)."""
+    target = args.template
+    tmpdir = None
+    try:
+        if target.lower().endswith(".motion") or Path(target).is_file():
+            import tempfile
+            import zipfile
+            tmpdir = tempfile.mkdtemp(prefix="omotion_audit_")
+            with zipfile.ZipFile(target) as z:
+                z.extractall(tmpdir)
+            target = tmpdir
+        from core.audit import audit_slots
+        report = audit_slots(target)
+        if args.json:
+            print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
+        else:
+            print(report.to_markdown())
+        if not report.healthy:
+            sys.exit(1)
+    finally:
+        if tmpdir:
+            import shutil
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="omotion",
@@ -240,6 +266,12 @@ def main():
     probe_p = subparsers.add_parser("probe", help="Probe template runtime capabilities")
     probe_p.add_argument("template", help="Path to .motion or template instance dir")
 
+    # audit
+    audit_p = subparsers.add_parser(
+        "audit", help="Audit copy-contract slot health (P2 参数槽失效审计)")
+    audit_p.add_argument("template", help="Path to .motion or template instance dir")
+    audit_p.add_argument("--json", action="store_true", help="Output JSON report")
+
     # validate
     validate_p = subparsers.add_parser("validate", help="Validate template and params")
     validate_p.add_argument("template", help="Path to .motion template")
@@ -261,6 +293,7 @@ def main():
         "validate": cmd_validate,
         "batch": cmd_batch,
         "probe": cmd_probe,
+        "audit": cmd_audit,
     }
     commands[args.command](args)
 
