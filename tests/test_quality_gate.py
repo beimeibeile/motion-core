@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
-"""Tests for core.quality_gate (four layers + 18/18 equivalent report)."""
+"""Tests for core.quality_gate (four layers + determinism + 25/25 equivalent report)."""
+import io
 import json
+import sys
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -175,6 +178,192 @@ class TestOutputLayer:
                    for c in results)
 
 
+class TestDeterminismLayer:
+    """P1: 渲染前静态确定性检查（源码时钟/随机风险 + 同轨重叠）。"""
+
+    def test_standard_clean_source(self, standard_tpl):
+        results = QualityGate().check_determinism_static(
+            str(standard_tpl), standard_params())
+        assert any(c.name == "clock_risk" and c.status == CheckStatus.PASS
+                   for c in results)
+        # standard 无 timeline.segments -> 跳过并 PASS
+        assert any(c.name == "clip_overlap" and c.status == CheckStatus.PASS
+                   for c in results)
+
+    def test_clock_risk_detected(self, tmp_path):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr("motion.json", "{}")
+            z.writestr("adapter.py",
+                       "def plan():\n    t = Date.now()\n    r = Math.random()\n")
+            z.writestr("render.mjs", "export default {}\n")
+        f = tmp_path / "risky.motion"
+        f.write_bytes(buf.getvalue())
+        results = QualityGate().check_determinism_static(str(f), {"mode": "standard"})
+        hits = [c for c in results if c.name == "clock_risk"]
+        assert hits and all(c.status == CheckStatus.WARN for c in hits)
+        assert "P0-b" in hits[0].message
+
+    def test_clock_risk_detected_dir(self, tmp_path):
+        """目录型模板（本地模板形态）同样可扫描。"""
+        d = tmp_path / "tpl_dir"
+        d.mkdir()
+        (d / "native").mkdir()
+        (d / "native" / "film.js").write_text(
+            "const t = performance.now();\n", encoding="utf-8")
+        (d / "motion.json").write_text("{}", encoding="utf-8")
+        results = QualityGate().check_determinism_static(str(d), {"mode": "standard"})
+        hits = [c for c in results if c.name == "clock_risk"]
+        assert hits and all(c.status == CheckStatus.WARN for c in hits)
+
+    def test_clip_overlap_detected(self, personal_tpl_v2):
+        params = {"timeline": {"segments": [
+            {"id": "s1", "start": 0, "end": 5},
+            {"id": "s2", "start": 4, "end": 9},
+        ]}}
+        results = QualityGate().check_determinism_static(str(personal_tpl_v2), params)
+        assert any(c.name == "clip_overlap" and c.status == CheckStatus.FAIL
+                   for c in results)
+
+    def test_clip_no_overlap(self, personal_tpl_v2):
+        params = {"timeline": {"segments": [
+            {"id": "s1", "start": 0, "end": 5},
+            {"id": "s2", "start": 5, "end": 9},
+        ]}}
+        results = QualityGate().check_determinism_static(str(personal_tpl_v2), params)
+        assert any(c.name == "clip_overlap" and c.status == CheckStatus.PASS
+                   for c in results)
+
+    def test_check_clip_overlap_unit(self):
+        g = QualityGate()
+        assert g._check_clip_overlap([]) == ""
+        assert g._check_clip_overlap([
+            {"id": "a", "start": 0, "end": 3},
+            {"id": "b", "start": 2.5, "end": 4},
+        ]) != ""
+        assert g._check_clip_overlap([
+            {"id": "a", "start": 0, "end": 3},
+            {"id": "b", "start": 3, "end": 4},
+        ]) == ""
+
+
+class TestOutputFrameChecks:
+    """P1: 输出级画面确定性（flat_frame 纯色 + frame_static 静止）。"""
+
+    @staticmethod
+    def _vary_frames(width=320, height=180, n=12):
+        fb = width * height * 3
+        frames = [bytes((j * 3 + i * 7) % 256 for j in range(fb))
+                  for i in range(n)]
+        return frames, {"width": width, "height": height, "duration": 10.0}
+
+    @staticmethod
+    def _flat_frames(width=320, height=180, n=12):
+        fb = width * height * 3
+        return [bytes([0]) * fb] * n, {"width": width, "height": height,
+                                       "duration": 10.0}
+
+    def test_flat_frame_all_pure(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "core.quality_gate.gate.QualityGate._ffmpeg_extract_frames",
+            lambda self, p, n=12: TestOutputFrameChecks._flat_frames())
+        f = tmp_path / "flat.mp4"
+        f.write_bytes(b"x")
+        results = QualityGate().check_output_frames(str(f))
+        assert any(c.name == "flat_frame" and c.status == CheckStatus.FAIL
+                   for c in results)
+        assert any(c.name == "frame_static" and c.status == CheckStatus.WARN
+                   for c in results)
+
+    def test_frames_vary_ok(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "core.quality_gate.gate.QualityGate._ffmpeg_extract_frames",
+            lambda self, p, n=12: TestOutputFrameChecks._vary_frames())
+        f = tmp_path / "vary.mp4"
+        f.write_bytes(b"x")
+        results = QualityGate().check_output_frames(str(f))
+        assert all(c.status == CheckStatus.PASS for c in results)
+
+    def test_extract_failure_warns(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "core.quality_gate.gate.QualityGate._ffmpeg_extract_frames",
+            lambda self, p, n=12: ([], None))
+        f = tmp_path / "noextract.mp4"
+        f.write_bytes(b"x")
+        results = QualityGate().check_output_frames(str(f))
+        assert any(c.name == "frame_extract" and c.status == CheckStatus.WARN
+                   for c in results)
+
+
+class TestOutputAudioChecks:
+    """P1: 输出级音频（峰值太小声 + LUFS 可选）。"""
+
+    @staticmethod
+    def _fake_run(text):
+        class FakeProc:
+            returncode = 0
+            stderr = text.encode("utf-8")
+            stdout = b""
+        return FakeProc
+
+    def test_peak_ok(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("core.quality_gate.gate.subprocess.run",
+                            lambda *a, **k: self._fake_run(
+                                "mean_volume: -19.3 dB\nmax_volume: -3.5 dB\n"))
+        f = tmp_path / "a.mp4"
+        f.write_bytes(b"x")
+        results = QualityGate().check_output_audio(str(f))
+        assert any(c.name == "audio_peak" and c.status == CheckStatus.PASS
+                   for c in results)
+
+    def test_peak_quiet_warns(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("core.quality_gate.gate.subprocess.run",
+                            lambda *a, **k: self._fake_run(
+                                "mean_volume: -43.0 dB\nmax_volume: -40.0 dB\n"))
+        f = tmp_path / "q.mp4"
+        f.write_bytes(b"x")
+        results = QualityGate().check_output_audio(str(f))
+        assert any(c.name == "audio_peak" and c.status == CheckStatus.WARN
+                   for c in results)
+        assert any("-30" in c.message for c in results
+                   if c.name == "audio_peak")
+
+    def test_lufs_missing_lib_warns(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("core.quality_gate.gate.subprocess.run",
+                            lambda *a, **k: self._fake_run(
+                                "mean_volume: -19.3 dB\nmax_volume: -3.5 dB\n"))
+        monkeypatch.setitem(sys.modules, "soundfile", None)
+        monkeypatch.setitem(sys.modules, "pyloudnorm", None)
+        f = tmp_path / "m.mp4"
+        f.write_bytes(b"x")
+        results = QualityGate().check_output_audio(str(f))
+        assert any(c.name == "loudness_lufs" and c.status == CheckStatus.WARN
+                   for c in results)
+
+    def test_lufs_ok_with_libs(self, tmp_path, monkeypatch):
+        class FakeMeter:
+            def __init__(self, rate):
+                pass
+            def integrated_loudness(self, data):
+                return -16.0
+        class FakePyln:
+            Meter = FakeMeter
+        class FakeSf:
+            @staticmethod
+            def read(path, dtype="float32"):
+                return __import__("numpy").zeros((44100, 2), dtype="float32"), 44100
+        monkeypatch.setattr("core.quality_gate.gate.subprocess.run",
+                            lambda *a, **k: self._fake_run(
+                                "mean_volume: -19.3 dB\nmax_volume: -3.5 dB\n"))
+        monkeypatch.setitem(sys.modules, "soundfile", FakeSf())
+        monkeypatch.setitem(sys.modules, "pyloudnorm", FakePyln())
+        f = tmp_path / "l.mp4"
+        f.write_bytes(b"x")
+        results = QualityGate().check_output_audio(str(f))
+        assert any(c.name == "loudness_lufs" and c.status == CheckStatus.PASS
+                   for c in results)
+
+
 class TestCombinedGate:
     def test_fail_overall(self, standard_tpl):
         gate = QualityGate()
@@ -185,14 +374,15 @@ class TestCombinedGate:
     def test_pass_overall_static_params(self, standard_tpl):
         gate = QualityGate()
         report = gate.check(str(standard_tpl), standard_params())
-        # static(4) + params(6: params_type+4 required+scenes) = 10, all pass
+        # static(4) + params(6) + determinism(2) = 12, all pass
         assert report.status == CheckStatus.PASS
-        assert report.summary["passed"] == 10
+        assert report.summary["passed"] == 12
         assert report.summary["failed"] == 0
 
-    def test_full_18_18_equivalent(self, standard_tpl, tmp_path, monkeypatch):
-        """Core regression: standard template full gate == 19/19 PASS
-        (static 4 + params 6 + render 3 + output 6)."""
+    def test_full_25_25_equivalent(self, standard_tpl, tmp_path, monkeypatch):
+        """Core regression: standard template full gate == 25/25 PASS
+        (static 4 + params 6 + determinism 2 + render 3 + output 6
+         + frames 2 + audio 2)."""
         def fake_probe(p):
             return {
                 "streams": [{"codec_type": "video", "codec_name": "h264",
@@ -201,6 +391,32 @@ class TestCombinedGate:
                 "format": {"duration": "5.0"},
             }
         monkeypatch.setattr("core.quality_gate.gate._ffprobe", fake_probe)
+        # 确定性画面：有内容、随时间变化
+        monkeypatch.setattr(
+            "core.quality_gate.gate.QualityGate._ffmpeg_extract_frames",
+            lambda self, p, n=12: TestOutputFrameChecks._vary_frames())
+        # 音频峰值正常
+        class FakeProc:
+            returncode = 0
+            stderr = b"mean_volume: -19.3 dB\nmax_volume: -3.5 dB\n"
+            stdout = b""
+        monkeypatch.setattr("core.quality_gate.gate.subprocess.run",
+                            lambda *a, **k: FakeProc())
+        # LUFS 可用
+        class FakeMeter:
+            def __init__(self, rate):
+                pass
+            def integrated_loudness(self, data):
+                return -16.0
+        class FakePyln:
+            Meter = FakeMeter
+        class FakeSf:
+            @staticmethod
+            def read(path, dtype="float32"):
+                return __import__("numpy").zeros((44100, 2), dtype="float32"), 44100
+        monkeypatch.setitem(sys.modules, "soundfile", FakeSf())
+        monkeypatch.setitem(sys.modules, "pyloudnorm", FakePyln())
+
         out = tmp_path / "render.mp4"
         out.write_bytes(b"data")
         gate = QualityGate()
@@ -211,8 +427,9 @@ class TestCombinedGate:
                            "elapsed_s": 21.7},
             expected={"width": 1920, "height": 1080, "duration": 5.0,
                       "require_audio": True})
-        # static 4 + params 6 + render 3 + output 6 = 19
-        assert report.summary["total"] == 19
-        assert report.summary["passed"] == 19
+        # static 4 + params 6 + determinism 2 + render 3 + output 6
+        #   + frames 2 + audio 2 = 25
+        assert report.summary["total"] == 25
+        assert report.summary["passed"] == 25
         assert report.summary["failed"] == 0
         assert report.status == CheckStatus.PASS

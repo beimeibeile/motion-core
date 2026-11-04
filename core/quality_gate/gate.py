@@ -325,6 +325,335 @@ class QualityGate:
             r.duration_ms = int((time.time() - t0) * 1000)
         return results
 
+    # ── Determinism (P1, OpenFilm look 借鉴) ─────────────────────
+
+    # 确定性风险源码模式（命中说明模板依赖真实时钟/未播种随机，
+    # 需要 P0-b 时钟冻结或模板侧整改）
+    CLOCK_RISK_PATTERNS = {
+        "Date.now()": "Date.now()",
+        "new Date(": "new Date(",
+        "performance.now()": "performance.now()",
+        "requestAnimationFrame": "requestAnimationFrame",
+        "Math.random()": "Math.random()",
+        "gsap.from(": "gsap.from(（from 型 tween 无显式起止，须改 fromTo）",
+        ".from(": ".from(（from 型 tween 无显式起止，须改 fromTo）",
+    }
+    # OpenFilm SAME_LIMIT 对应容差（0-255 尺度，先按开源默认标定）
+    FLAT_FRAME_VARIANCE = 6.0
+    STATIC_FRAME_MAD = 2.0      # 帧间平均绝对差 < 2.0 视为"整片静止"
+    AUDIO_PEAK_MIN_DB = -30.0   # 峰值低于 -30dB 视为太小声
+
+    def _extract_scripts_from_zip(self, template_path: str) -> str:
+        """读取模板包内渲染脚本源码（adapter/render/native/assistant），
+        用于确定性风险静态扫描。支持 .motion ZIP 与解包目录两种形态。
+        返回拼接文本，失败返回空串。"""
+        wanted = (".py", ".mjs", ".js", ".html")
+        chunks = []
+
+        def _collect_text(path: Path) -> None:
+            if path.is_dir():
+                for p in path.rglob("*"):
+                    try:
+                        if p.is_file():
+                            _collect_text(p)
+                    except Exception:
+                        continue
+                return
+            low = path.name.lower()
+            if not low.endswith(wanted):
+                return
+            if any(seg in low for seg in ("node_modules", "__pycache__")):
+                return
+            try:
+                data = path.read_bytes()
+                if len(data) > 1_000_000:
+                    data = data[:1_000_000]
+                chunks.append(f"=== {path.name} ===\n"
+                              + data.decode("utf-8", errors="replace"))
+            except Exception:
+                pass
+
+        import zipfile
+        path = Path(template_path)
+        if path.is_dir():
+            _collect_text(path)
+            return "\n".join(chunks)
+        try:
+            with zipfile.ZipFile(path, "r") as z:
+                for name in z.namelist():
+                    low = name.lower()
+                    if not low.endswith(wanted):
+                        continue
+                    if any(seg in low for seg in ("/node_modules/", "/__pycache__/")):
+                        continue
+                    try:
+                        data = z.read(name)
+                        if len(data) > 1_000_000:  # 单文件上限 1MB
+                            data = data[:1_000_000]
+                        chunks.append(f"=== {name} ===\n"
+                                      + data.decode("utf-8", errors="replace"))
+                    except Exception:
+                        continue
+        except Exception:
+            return ""
+        return "\n".join(chunks)
+
+    def check_determinism_static(self, template_path: str,
+                                 params: dict) -> list[CheckResult]:
+        """确定性静态检查（渲染前）：源码时钟/随机风险扫描 + 同轨重叠。
+
+        对应 OpenFilm look：把"作者以为自己是纯函数"和"实际是纯函数"
+        区分开——命中时钟/随机/from 型 tween 的模板，预览与成片可能
+        不一致，需要 P0-b 时钟冻结或模板侧整改。
+        """
+        results = []
+        t0 = time.time()
+
+        # D1: 源码确定性风险扫描
+        source = self._extract_scripts_from_zip(template_path)
+        if not source:
+            results.append(CheckResult("determinism", "clock_risk", CheckStatus.WARN,
+                                       "无法读取模板源码，跳过确定性风险扫描"))
+        else:
+            hits = {}
+            for pattern, label in self.CLOCK_RISK_PATTERNS.items():
+                idx = source.find(pattern)
+                if idx != -1:
+                    # 定位命中位置所在行（取前后 60 字符做上下文）
+                    line_start = source.rfind("\n", 0, idx) + 1
+                    snippet = source[line_start:idx + 80].strip()
+                    hits.setdefault(pattern, snippet[:120])
+            if hits:
+                msgs = []
+                for pattern, snippet in hits.items():
+                    msgs.append(f"{self.CLOCK_RISK_PATTERNS[pattern]}（{snippet}…）")
+                results.append(CheckResult(
+                    "determinism", "clock_risk", CheckStatus.WARN,
+                    "检测到确定性风险：" + "；".join(msgs)
+                    + "。该模板需要 P0-b 时钟冻结或模板侧整改"
+                      "（预览与成片可能不一致）"))
+            else:
+                results.append(CheckResult("determinism", "clock_risk",
+                                           CheckStatus.PASS,
+                                           "未发现 Date/随机/from 型 tween 依赖"))
+
+        # D2: 同轨片段重叠检查（personal timeline.segments）
+        timeline = params.get("timeline") if isinstance(params, dict) else None
+        segments = []
+        if isinstance(timeline, dict):
+            segments = timeline.get("segments") or []
+        overlap = self._check_clip_overlap(segments)
+        if segments:
+            if overlap:
+                results.append(CheckResult("determinism", "clip_overlap",
+                                           CheckStatus.FAIL,
+                                           f"同轨片段重叠: {overlap}"))
+            else:
+                results.append(CheckResult("determinism", "clip_overlap",
+                                           CheckStatus.PASS,
+                                           f"{len(segments)} 个片段无重叠"))
+        else:
+            results.append(CheckResult("determinism", "clip_overlap",
+                                       CheckStatus.PASS,
+                                       "参数无 timeline.segments（标准格式场景段无时间字段，跳过）"))
+
+        for r in results:
+            r.duration_ms = int((time.time() - t0) * 1000)
+        return results
+
+    @staticmethod
+    def _check_clip_overlap(segments: list) -> str:
+        """检查时间线同轨片段是否重叠（OpenFilm: 同轨 clip 不得重叠）。
+
+        segments 形如 [{"id","start","end"}, ...]；start/end 为秒。
+        返回首个重叠描述；无重叠返回空串。
+        """
+        if not segments:
+            return ""
+        rows = []
+        for seg in segments:
+            if not isinstance(seg, dict):
+                continue
+            s = seg.get("start")
+            e = seg.get("end")
+            if isinstance(s, (int, float)) and isinstance(e, (int, float)):
+                rows.append((float(s), float(e), str(seg.get("id", "?"))))
+        rows.sort(key=lambda r: (r[0], r[1]))
+        for i in range(1, len(rows)):
+            ps, pe, pid = rows[i - 1]
+            cs, ce, cid = rows[i]
+            if cs < pe - 1e-6:
+                return (f"{pid}[{ps:.3f},{pe:.3f}] 与 {cid}[{cs:.3f},{ce:.3f}]"
+                        f" 重叠 {pe - cs:.3f}s")
+        return ""
+
+    def _ffmpeg_extract_frames(self, output_path: str, n: int = 12
+                               ) -> tuple[list, Optional[dict]]:
+        """用 ffmpeg 从成片抽 n 帧 raw RGB24，返回 (frames, meta)。
+
+        meta: {width, height, duration}；失败返回 ([], None)。
+        """
+        probe = _ffprobe(output_path)
+        if not probe:
+            return [], None
+        video = next((s for s in probe.get("streams", [])
+                      if s.get("codec_type") == "video"), None)
+        if not video:
+            return [], None
+        width = int(video.get("width", 0))
+        height = int(video.get("height", 0))
+        duration = float(probe.get("format", {}).get("duration", 0))
+        if width <= 0 or height <= 0 or duration <= 0:
+            return [], None
+        fps = 30.0
+        fr = video.get("r_frame_rate", "")
+        if "/" in fr:
+            try:
+                num, den = fr.split("/")
+                fps = float(num) / max(1.0, float(den))
+            except Exception:
+                fps = 30.0
+        step = max(1, int(duration * fps / n))
+        cmd = ["ffmpeg", "-v", "error", "-i", output_path,
+               "-vf", f"select='not(mod(n\\,{step}))'", "-vsync", "vfr",
+               "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]
+        try:
+            proc = subprocess.run(cmd, capture_output=True, timeout=120)
+            if proc.returncode != 0:
+                return [], None
+        except Exception:
+            return [], None
+        frame_bytes = width * height * 3
+        raw = proc.stdout
+        frames = [raw[i:i + frame_bytes]
+                  for i in range(0, len(raw) - frame_bytes + 1, frame_bytes)]
+        # 最多返回 n 帧
+        frames = frames[:n]
+        if not frames:
+            return [], None
+        return frames, {"width": width, "height": height, "duration": duration}
+
+    @staticmethod
+    def _frame_stats(frame: bytes, stride: int = 16) -> dict:
+        """抽样像素计算 0-255 尺度方差与均值（纯 Python，无 numpy 依赖）。"""
+        n = len(frame)
+        if n == 0:
+            return {"mean": 0.0, "variance": 0.0}
+        samples = frame[::stride]
+        if not samples:
+            samples = frame[:1]
+        total = sum(samples)
+        count = len(samples)
+        mean = total / count
+        var = sum((v - mean) ** 2 for v in samples) / count
+        return {"mean": mean, "variance": var}
+
+    def check_output_frames(self, output_path: str,
+                            n: int = 12) -> list[CheckResult]:
+        """输出级画面确定性检查（渲染后，ffmpeg 抽帧）：
+        flat_frame（镜头中点纯色）+ frame_static（整片静止无动效）。
+        """
+        results = []
+        t0 = time.time()
+        frames, meta = self._ffmpeg_extract_frames(output_path, n)
+        if not frames or not meta:
+            results.append(CheckResult("output", "frame_extract", CheckStatus.WARN,
+                                       "无法抽帧（ffmpeg 不可用或输出异常），"
+                                       "跳过画面确定性检查"))
+            return results
+
+        stats = [self._frame_stats(f) for f in frames]
+        flat = [i for i, s in enumerate(stats) if s["variance"] < self.FLAT_FRAME_VARIANCE]
+        if len(flat) == n:
+            results.append(CheckResult("output", "flat_frame", CheckStatus.FAIL,
+                                       "全部采样帧方差 < 6，画面接近纯色/未渲染"))
+        elif flat:
+            results.append(CheckResult("output", "flat_frame", CheckStatus.WARN,
+                                       f"{len(flat)}/{n} 帧画面接近纯色"
+                                       f"（方差<{self.FLAT_FRAME_VARIANCE:.0f}）: "
+                                       f"帧位 {flat}"))
+        else:
+            results.append(CheckResult("output", "flat_frame", CheckStatus.PASS,
+                                       f"{n} 帧方差均 ≥ {self.FLAT_FRAME_VARIANCE:.0f}"))
+
+        # 整片静止：所有帧与首帧的平均绝对差 < 容差
+        first = stats[0]
+        mad = max(abs(s["mean"] - first["mean"]) for s in stats[1:]) if len(stats) > 1 else 0.0
+        if mad < self.STATIC_FRAME_MAD:
+            results.append(CheckResult("output", "frame_static", CheckStatus.WARN,
+                                       f"采样帧画面几乎无变化 (Δmean={mad:.2f})，"
+                                       "模板可能没有随时间变化的动效"))
+        else:
+            results.append(CheckResult("output", "frame_static", CheckStatus.PASS,
+                                       f"画面随时间变化正常 (Δmean={mad:.2f})"))
+
+        for r in results:
+            r.duration_ms = int((time.time() - t0) * 1000)
+        return results
+
+    def check_output_audio(self, output_path: str) -> list[CheckResult]:
+        """输出级音频检查（渲染后）：峰值太小声 + LUFS（pyloudnorm 可选）。"""
+        results = []
+        t0 = time.time()
+        cmd = ["ffmpeg", "-v", "info", "-i", output_path, "-af", "volumedetect",
+               "-vn", "-sn", "-f", "null", "-"]
+        try:
+            proc = subprocess.run(cmd, capture_output=True, timeout=120)
+        except Exception:
+            proc = None
+        if proc is None or proc.returncode != 0:
+            results.append(CheckResult("output", "audio_peak", CheckStatus.WARN,
+                                       "无法读取音频音量（ffmpeg volumedetect 失败）"))
+            for r in results:
+                r.duration_ms = int((time.time() - t0) * 1000)
+            return results
+
+        text = (proc.stderr or b"").decode("utf-8", errors="replace")
+        mean_db = max_db = None
+        for line in text.splitlines():
+            line = line.strip()
+            if line.startswith("mean_volume:"):
+                try:
+                    mean_db = float(line.split(":")[1].strip().split()[0])
+                except Exception:
+                    pass
+            elif line.startswith("max_volume:"):
+                try:
+                    max_db = float(line.split(":")[1].strip().split()[0])
+                except Exception:
+                    pass
+
+        if max_db is None:
+            results.append(CheckResult("output", "audio_peak", CheckStatus.WARN,
+                                       "未解析到音量数据（可能无音轨）"))
+        elif max_db < self.AUDIO_PEAK_MIN_DB:
+            results.append(CheckResult("output", "audio_peak", CheckStatus.WARN,
+                                       f"峰值 {max_db:.1f}dB < -30dB，太小声听不见"))
+        else:
+            results.append(CheckResult("output", "audio_peak", CheckStatus.PASS,
+                                       f"峰值 {max_db:.1f}dB / 均值 {mean_db or 0:.1f}dB"))
+
+        # LUFS（pyloudnorm 可选；缺失时 WARN 不失败）
+        try:
+            import soundfile as sf
+            import pyloudnorm as pyln
+            import numpy as _np
+            data, rate = sf.read(output_path, dtype="float32")
+            meter = pyln.Meter(rate)
+            lufs = meter.integrated_loudness(data)
+            results.append(CheckResult("output", "loudness_lufs", CheckStatus.PASS,
+                                       f"整片 LUFS {lufs:.1f}"))
+        except ImportError:
+            results.append(CheckResult("output", "loudness_lufs", CheckStatus.WARN,
+                                       "pyloudnorm/soundfile 未安装，跳过 LUFS（可选增强）"))
+        except Exception as e:
+            results.append(CheckResult("output", "loudness_lufs", CheckStatus.WARN,
+                                       f"LUFS 计算失败: {e}"))
+
+        for r in results:
+            r.duration_ms = int((time.time() - t0) * 1000)
+        return results
+
     # ── Combined ─────────────────────────────────────────────────
 
     def check(self, template_path: str, params: dict,
@@ -349,6 +678,9 @@ class QualityGate:
         all_checks.extend(self.check_static(template_path))
         all_checks.extend(self.check_params(template_path, params))
 
+        # Determinism (P1): 静态风险扫描 + 同轨重叠（渲染前）
+        all_checks.extend(self.check_determinism_static(template_path, params))
+
         # Layer 3: only if render_result provided
         if render_result is not None:
             all_checks.extend(self.check_render(render_result))
@@ -356,6 +688,8 @@ class QualityGate:
         # Layer 4: only if output_path provided
         if output_path is not None:
             all_checks.extend(self.check_output(output_path, expected))
+            all_checks.extend(self.check_output_frames(output_path))
+            all_checks.extend(self.check_output_audio(output_path))
 
         report.checks = all_checks
 
