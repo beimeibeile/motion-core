@@ -456,20 +456,31 @@ def _handle_template_select(template_dir: str, topic: Optional[str] = None,
 def _handle_batch_report(tasks_file: str = "tasks.json",
                          template_dir: Optional[str] = None,
                          output_dir: Optional[str] = None,
+                         with_doctor: bool = True,
+                         with_lint: bool = True,
+                         with_contact_sheet: bool = True,
+                         contact_sheet_frames: int = 12,
                          **kwargs) -> Dict[str, Any]:
-    """批量质量报告（Phase 3 I5）：聚合渲染结果 + 异常分类 + 重试策略。
+    """批量质量报告（Phase 3 I5 + OpenFilm P3 并入）：
+    聚合渲染结果 + 异常分类 + 重试策略 + doctor 环境自检 +
+    逐任务 lint + done 成片 contact sheet。
 
     Args:
         tasks_file: 任务文件 JSON 路径
         template_dir / output_dir: 与任务管理一致的上下文（透传）
+        with_doctor / with_lint / with_contact_sheet: P3 增强开关（默认开）
+        contact_sheet_frames: contact sheet 帧数（默认 12）
 
     Returns:
-        完整质量报告（summary/stage_breakdown/error_types/retry_strategy/tasks）
+        完整质量报告（summary/stage_breakdown/error_types/
+        retry_strategy/tasks/environment/template_checks/contact_sheets）
     """
     from core.producer import TaskManager, build_report
     mgr = TaskManager(tasks_file=tasks_file, template_dir=template_dir,
                       output_dir=output_dir)
-    report = build_report(mgr)
+    report = build_report(mgr, with_doctor=with_doctor, with_lint=with_lint,
+                          with_contact_sheet=with_contact_sheet,
+                          contact_sheet_frames=contact_sheet_frames)
     return {"report": report.to_dict()}
 
 

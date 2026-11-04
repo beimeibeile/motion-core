@@ -9,7 +9,13 @@
   - 异常分类：stage + 错误样例聚合
   - 重试策略：可重试（env/prepare/render/unknown → --retry-failed 重跑）
              不可重试（gate 质量门拦截 / 模板缺失 → 需人工或修复）
+
+OpenFilm P3 并入（#61 三项，默认开启、失败容忍、可逐项关闭）：
+  - doctor 环境自检 → environment / env_warnings
+  - 严格解析 lint → template_checks（逐任务模板结构）
+  - contact sheet    → contact_sheets（done 成片 <output>.contact-sheet.png）
 """
+import os
 import time
 from collections import Counter
 from dataclasses import dataclass, field
@@ -50,9 +56,14 @@ class BatchQualityReport:
     retryable_ids: list[str] = field(default_factory=list)
     blocked_ids: list[str] = field(default_factory=list)
     tasks: list[TaskReportRow] = field(default_factory=list)
+    # OpenFilm P3 并入字段
+    environment: Optional[dict] = None
+    env_warnings: list[str] = field(default_factory=list)
+    template_checks: list[dict] = field(default_factory=list)
+    contact_sheets: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "generated_at": self.generated_at,
             "tasks_file": self.tasks_file,
             "summary": {
@@ -74,6 +85,14 @@ class BatchQualityReport:
                 "error": r.error, "retryable": r.retryable,
             } for r in self.tasks],
         }
+        if self.environment is not None:
+            d["environment"] = self.environment
+            d["env_warnings"] = self.env_warnings
+        if self.template_checks:
+            d["template_checks"] = self.template_checks
+        if self.contact_sheets:
+            d["contact_sheets"] = self.contact_sheets
+        return d
 
     def to_markdown(self) -> str:
         s = self.by_status
@@ -98,6 +117,29 @@ class BatchQualityReport:
             for e in self.error_types:
                 lines.append(f"- [{e['stage']}] ×{e['count']}: "
                              f"{e['sample_error'][:100]}")
+        if self.environment is not None:
+            env = self.environment.get("summary", {}).get("environment", {})
+            lines += ["", "## 环境自检（doctor）", ""]
+            for k, v in env.items():
+                lines.append(f"- {k}: {v}")
+            if self.env_warnings:
+                lines.append("")
+                for w in self.env_warnings:
+                    lines.append(f"- ⚠️ {w}")
+        if self.template_checks:
+            lines += ["", "## 模板结构 lint", ""]
+            bad = [c for c in self.template_checks if not c["healthy"]]
+            lines.append(f"- 通过 {len(self.template_checks) - len(bad)} / "
+                         f"共 {len(self.template_checks)}")
+            for c in bad:
+                lines.append(f"- ❌ {c['id']}（{c.get('template', '')}）: "
+                             f"{c.get('errors', 0)} errors")
+        if self.contact_sheets:
+            lines += ["", "## contact sheet（O2 验收可视化附件）", ""]
+            for c in self.contact_sheets:
+                status = c.get("error", c.get("frames", "?"))
+                lines.append(f"- {c['id']} → {c.get('path', '')} "
+                             f"({status})")
         if self.retryable_ids:
             lines += ["", f"## 可重试（{len(self.retryable_ids)} 个）",
                       "",
@@ -114,8 +156,86 @@ class BatchQualityReport:
         return "\n".join(lines)
 
 
-def build_report(manager: TaskManager) -> BatchQualityReport:
-    """从 TaskManager 聚合批量质量报告。"""
+def _collect_environment() -> dict:
+    """doctor 环境自检：node/ffmpeg/ffprobe/Chrome + 模板完整性。"""
+    from ..doctor import run_doctor
+    doc = run_doctor()
+    dct = doc.to_dict()
+    warnings = []
+    names = {i["name"]: i for i in dct.get("environment", [])}
+    for required in ("node", "ffmpeg", "ffprobe"):
+        if required in names and names[required]["status"] == "missing":
+            warnings.append(f"{required} 缺失：渲染/抽帧受影响，请先安装")
+    if not dct.get("healthy"):
+        warnings.append("环境自检未通过，渲染结果可能不可靠")
+    return {"environment": dct, "warnings": warnings}
+
+
+def _collect_lints(manager: TaskManager) -> list[dict]:
+    """逐任务模板结构 lint（目录形态才 lint；.motion 文件跳过并标注）。"""
+    from ..template_parser.strict import lint_template
+    checks: list[dict] = []
+    for t in manager.list_tasks():
+        resolved = manager.resolve_template(t.template)
+        if not resolved:
+            checks.append({"id": t.id, "template": t.template,
+                           "healthy": False, "errors": 1,
+                           "error": "模板路径无法解析"})
+            continue
+        if resolved.is_file():
+            checks.append({"id": t.id, "template": t.template,
+                           "healthy": True, "errors": 0,
+                           "note": ".motion 文件形态，lint 跳过（解包后另检）"})
+            continue
+        try:
+            r = lint_template(str(resolved))
+            checks.append({"id": t.id, "template": t.template,
+                           "healthy": r.healthy,
+                           "errors": r.summary.get("errors", 0),
+                           "warnings": r.summary.get("warnings", 0)})
+        except Exception as e:
+            checks.append({"id": t.id, "template": t.template,
+                           "healthy": False, "errors": 1,
+                           "error": str(e)[:200]})
+    return checks
+
+
+def _collect_contact_sheets(manager: TaskManager,
+                            n: int = 12) -> list[dict]:
+    """done 成片生成 contact sheet（失败容忍，不阻断报告）。"""
+    from ..quality_gate.contact_sheet import generate_contact_sheet
+    sheets: list[dict] = []
+    for t in manager.list_tasks():
+        if t.status != "done":
+            continue
+        out = manager.resolve_output(t)
+        if not out or not os.path.isfile(out):
+            sheets.append({"id": t.id, "error": "成片不存在"})
+            continue
+        sheet_path = f"{out}.contact-sheet.png"
+        try:
+            r = generate_contact_sheet(out, sheet_path, n)
+            if "error" in r:
+                sheets.append({"id": t.id, "error": r["error"]})
+            else:
+                sheets.append({"id": t.id, "path": sheet_path,
+                               "frames": r["frames"],
+                               "duration": r["duration"]})
+        except Exception as e:
+            sheets.append({"id": t.id, "error": str(e)[:200]})
+    return sheets
+
+
+def build_report(manager: TaskManager,
+                 with_doctor: bool = True,
+                 with_lint: bool = True,
+                 with_contact_sheet: bool = True,
+                 contact_sheet_frames: int = 12) -> BatchQualityReport:
+    """从 TaskManager 聚合批量质量报告。
+
+    OpenFilm P3 并入（#61）：doctor 环境自检 / 逐任务 lint /
+    done 成片 contact sheet，默认开启、失败容忍、可逐项关闭。
+    """
     report = BatchQualityReport(
         generated_at=time.strftime("%Y-%m-%d %H:%M:%S"),
         tasks_file=str(manager.tasks_file),
@@ -158,6 +278,16 @@ def build_report(manager: TaskManager) -> BatchQualityReport:
     report.error_types = [
         {"stage": k[0], "count": v, "sample_error": err_sample[k]}
         for k, v in err_counts.most_common()]
+
+    if with_doctor:
+        env = _collect_environment()
+        report.environment = env["environment"]
+        report.env_warnings = env["warnings"]
+    if with_lint:
+        report.template_checks = _collect_lints(manager)
+    if with_contact_sheet:
+        report.contact_sheets = _collect_contact_sheets(
+            manager, n=contact_sheet_frames)
     return report
 
 

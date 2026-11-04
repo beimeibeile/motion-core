@@ -181,11 +181,32 @@ def cmd_validate(args):
 
 
 def cmd_batch(args):
-    """Batch render from a task list JSON file."""
-    tasklist = args.tasklist
-    print(f"📦 批量渲染: {tasklist}")
-    print("⚠️  批量渲染功能将在 Phase 1 实现")
-    # TODO: Implement batch rendering in Phase 1
+    """Batch quality report from a task list JSON file (I5 + OpenFilm P3 并入).
+
+    OpenFilm P3 并入：doctor 环境自检 / 逐任务 lint / done 成片
+    contact sheet 默认开启（--no-* 关闭）。
+    """
+    from core.producer import TaskManager, build_report
+    mgr = TaskManager(tasks_file=args.tasklist)
+    report = build_report(
+        mgr,
+        with_doctor=not args.no_doctor,
+        with_lint=not args.no_lint,
+        with_contact_sheet=not args.no_contact_sheet,
+        contact_sheet_frames=args.frames)
+    if args.json:
+        print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
+    else:
+        print(report.to_markdown())
+    if report.total == 0 and Path(args.tasklist).exists():
+        print("⚠️  任务文件为空或 JSON 非法（检查转义：路径反斜杠须为 \\\\）",
+              file=sys.stderr)
+    if args.output:
+        out = Path(args.output)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(report.to_dict(), ensure_ascii=False,
+                                  indent=2), encoding="utf-8")
+        print(f"报告已写入: {out}")
 
 
 def cmd_probe(args):
@@ -349,8 +370,19 @@ def main():
     validate_p.add_argument("--params", help="Path to params JSON file")
 
     # batch
-    batch_p = subparsers.add_parser("batch", help="Batch render from task list")
+    batch_p = subparsers.add_parser(
+        "batch", help="Batch quality report from task list (I5 + OpenFilm P3)")
     batch_p.add_argument("tasklist", help="Path to task list JSON")
+    batch_p.add_argument("--json", action="store_true", help="Output JSON report")
+    batch_p.add_argument("-o", "--output", help="Write JSON report to path")
+    batch_p.add_argument("--no-doctor", action="store_true",
+                         help="Skip environment self-check")
+    batch_p.add_argument("--no-lint", action="store_true",
+                         help="Skip per-task template lint")
+    batch_p.add_argument("--no-contact-sheet", action="store_true",
+                         help="Skip contact sheet generation")
+    batch_p.add_argument("--frames", type=int, default=12,
+                         help="Contact sheet frame count (default 12)")
 
     args = parser.parse_args()
 
