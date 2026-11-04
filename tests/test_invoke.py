@@ -61,6 +61,43 @@ class TestInvoke:
         assert result["success"] is True
 
 
+class TestRenderCapabilityContract:
+    """回归（2026-11-05）：invoke 渲染能力的参数契约与失败透传。
+
+    修复前两个硬缺陷：
+    1. _handle_render 把 width/height/fps 传给 RenderPipeline.render()（签名里没有）→ 必然 TypeError
+    2. RenderPipeline 失败时返回 success=False 的 dict，invoke 外层仍报 success=True → 假成功
+    """
+
+    def test_pipeline_render_has_no_size_kwargs(self):
+        import inspect
+
+        from core.renderer.pipeline import RenderPipeline
+        params = inspect.signature(RenderPipeline.render).parameters
+        for name in ("width", "height", "fps"):
+            assert name not in params
+
+    def test_mismatched_size_rejected(self, standard_tpl, tmp_path):
+        from core.template_parser import parse_template
+        info = parse_template(str(standard_tpl))
+        r = invoke("motion_template_render", template_path=str(standard_tpl),
+                   params={}, output_path=str(tmp_path / "o.mp4"),
+                   width=int(info.output_width) + 100)
+        assert r["success"] is False
+        assert "不支持改写" in r["error"]
+
+    def test_pipeline_failure_surfaces(self, standard_tpl, tmp_path, monkeypatch):
+        from core.renderer import pipeline as pipeline_mod
+        monkeypatch.setattr(
+            pipeline_mod.RenderPipeline, "render",
+            lambda self, params, output_path=None, **kw: {
+                "success": False, "error_stage": "plan", "error": "boom"})
+        r = invoke("motion_template_render", template_path=str(standard_tpl),
+                   params={}, output_path=str(tmp_path / "o.mp4"))
+        assert r["success"] is False
+        assert "boom" in r["error"]
+
+
 class TestRequirementCapabilities:
     """模板需求智能处理（P0 / I8 前置）invoke 能力验证。"""
 

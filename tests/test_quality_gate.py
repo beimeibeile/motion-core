@@ -295,6 +295,46 @@ class TestOutputFrameChecks:
                    for c in results)
 
 
+class TestFrameExtractionCommand:
+    """回归（2026-11-05）：ffmpeg 抽帧命令须适配新版 ffmpeg，且限制输出帧数。
+
+    ffmpeg 7.x 移除了 -vsync 选项；旧命令会让抽帧永远失败，
+    导致画面确定性检查静默降级成 WARN。此处直接断言命令行契约。
+    """
+
+    @staticmethod
+    def _probe_stub(width=320, height=180, duration=10.0, fps="30/1"):
+        return {"streams": [{"codec_type": "video", "codec_name": "h264",
+                             "width": width, "height": height,
+                             "r_frame_rate": fps}],
+                "format": {"duration": str(duration)}}
+
+    def test_command_has_no_deprecated_vsync(self, monkeypatch):
+        captured = {}
+
+        class FakeProc:
+            returncode = 0
+            stdout = b"\x00" * (320 * 180 * 3) * 3
+            stderr = b""
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            return FakeProc()
+
+        monkeypatch.setattr("core.quality_gate.gate._ffprobe",
+                            lambda p: TestFrameExtractionCommand._probe_stub())
+        monkeypatch.setattr("core.quality_gate.gate.subprocess.run", fake_run)
+        frames, meta = QualityGate()._ffmpeg_extract_frames("x.mp4", n=2)
+        cmd = captured["cmd"]
+        assert "-vsync" not in cmd, "旧版 -vsync 在新 ffmpeg 上已移除，会让抽帧永久失败"
+        assert "-frames:v" in cmd, "必须限制输出帧数，否则长视频会把全帧 raw 灌进内存"
+        vf = cmd[cmd.index("-vf") + 1]
+        assert "select=" in vf
+        assert "-an" in cmd
+        assert len(frames) == 2
+        assert meta["width"] == 320
+
+
 class TestOutputAudioChecks:
     """P1: 输出级音频（峰值太小声 + LUFS 可选）。"""
 

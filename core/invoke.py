@@ -134,31 +134,65 @@ def _handle_parse(template_path: str, decrypt_key: Optional[str] = None, **kwarg
 
 @_register("motion_template_render")
 def _handle_render(template_path: str, params: Dict[str, Any] = None,
-                   output_path: str = None, width: int = 1920,
-                   height: int = 1080, fps: int = 60, **kwargs) -> Dict[str, Any]:
+                   output_path: str = None, width: Optional[int] = None,
+                   height: Optional[int] = None, fps: Optional[float] = None,
+                   **kwargs) -> Dict[str, Any]:
     """
     渲染 .motion 模板为视频
+
+    输出宽高与帧率由模板自身声明决定（写死在模板 runtime 源码里），
+    渲染引擎不支持改写。显式传入且与声明不一致时直接报错，
+    不做静默忽略——否则调用方会误以为自己改了规格。
 
     Args:
         template_path: .motion 文件路径
         params: 模板参数
         output_path: 输出 mp4 路径
-        width: 输出宽度
-        height: 输出高度
-        fps: 帧率
+        width: 可选，输出宽度（仅作校验；须与模板声明一致）
+        height: 可选，输出高度（仅作校验；须与模板声明一致）
+        fps: 可选，帧率（仅作校验；须与模板声明一致）
 
     Returns:
         渲染结果 dict（含输出路径、时长、帧数等）
     """
+    if not output_path:
+        raise ValueError("output_path 必填")
+
     from core.renderer import RenderPipeline
     pipeline = RenderPipeline(template_path)
-    return pipeline.render(
-        params=params or {},
-        output_path=output_path,
-        width=width,
-        height=height,
-        fps=fps
-    )
+    info = pipeline.template_info
+
+    declared = {
+        "width": info.output_width,
+        "height": info.output_height,
+        "fps": info.output_fps,
+    }
+    mismatched = []
+    for key, value in (("width", width), ("height", height), ("fps", fps)):
+        if value is None or not declared.get(key):
+            continue
+        # fps 声明可能为 float/int，按浮点比较避免 60 与 60.0 误报
+        delta = (abs(float(value) - float(declared[key])) if key == "fps"
+                 else abs(int(value) - int(declared[key])))
+        if delta > 0.001:
+            mismatched.append(f"{key}={value}（模板声明 {declared[key]}）")
+
+    if mismatched:
+        raise ValueError(
+            "模板输出规格固定，不支持改写："
+            + "；".join(mismatched)
+            + "。渲染分辨率/帧率由模板自身声明决定，如需其他规格请选对应画幅的模板。"
+        )
+
+    result = pipeline.render(params=params or {}, output_path=output_path)
+    # RenderPipeline 失败时返回 success=False 的 dict 而不是抛异常；
+    # 这里必须转成异常，否则 invoke 外层仍然报 success=True（假成功）
+    if isinstance(result, dict) and result.get("success") is False:
+        raise RuntimeError(
+            f"渲染失败[{result.get('error_stage', 'unknown')}]: "
+            f"{result.get('error') or ''} {result.get('error_detail') or ''}".strip()
+        )
+    return result
 
 
 @_register("motion_quality_check")

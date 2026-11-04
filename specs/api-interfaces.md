@@ -220,6 +220,17 @@ fragment = lib.get("text-highlight-01")
 |--------|------|
 | `producer_requirement_plan` | 需求理解：台词→语义阶段→场景映射→阻塞报告 |
 | `producer_requirement_build` | 契约生成：台词→契约合法参数（阻塞返回报告不出参数） |
+| `motion_template_render` | 渲染 `.motion`：输出规格由模板声明决定；渲染失败透传为 `success=false` |
+
+#### `motion_template_render` 契约（2026-11-05 收紧）
+
+- `width` / `height` / `fps` 默认 `None`，是**可选校验参数**，不是覆盖参数：
+  模板的输出规格写死在 runtime 源码里，与 `motion.json` 声明值不一致时直接报错
+  （错误信息含"模板输出规格固定，不支持改写"），不静默忽略，也不按传入值渲染。
+- `output_path` 必填。
+- `RenderPipeline.render()` 失败时返回 `success=False` 的 dict，`invoke` 必须把它转成
+  异常（外层 `success=false` + `error`），否则调用方会把渲染失败当成功。
+
 
 典型调用（批量任务理解期 / 即时任务理解）：
 

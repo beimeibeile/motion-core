@@ -514,9 +514,11 @@ class QualityGate:
             except Exception:
                 fps = 30.0
         step = max(1, int(duration * fps / n))
+        # 注意：ffmpeg 7.x 已移除 -vsync（改用 -fps_mode），这里两者都不用；
+        # -frames:v 限制输出帧数，避免长视频把全帧 raw 灌进内存。
         cmd = ["ffmpeg", "-v", "error", "-i", output_path,
-               "-vf", f"select='not(mod(n\\,{step}))'", "-vsync", "vfr",
-               "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]
+               "-vf", f"select='not(mod(n,{step}))'", "-frames:v", str(n),
+               "-f", "rawvideo", "-pix_fmt", "rgb24", "-an", "-"]
         try:
             proc = subprocess.run(cmd, capture_output=True, timeout=120)
             if proc.returncode != 0:
@@ -602,8 +604,14 @@ class QualityGate:
         except Exception:
             proc = None
         if proc is None or proc.returncode != 0:
-            results.append(CheckResult("output", "audio_peak", CheckStatus.WARN,
-                                       "无法读取音频音量（ffmpeg volumedetect 失败）"))
+            # 失败时用 ffprobe 复查：无音轨与"音量读取失败"是两回事，
+            # 把前者说成后者会掩盖真实原因
+            probe = _ffprobe(output_path) or {}
+            has_audio = any(s.get("codec_type") == "audio"
+                            for s in probe.get("streams", []))
+            msg = ("无法读取音频音量（ffmpeg volumedetect 失败）" if has_audio
+                   else "无音轨（成片未含音频）")
+            results.append(CheckResult("output", "audio_peak", CheckStatus.WARN, msg))
             for r in results:
                 r.duration_ms = int((time.time() - t0) * 1000)
             return results
