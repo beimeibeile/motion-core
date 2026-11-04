@@ -208,6 +208,18 @@ class StandardRenderEngine(RenderEngine):
         if code != 0:
             raise RenderError("prepare", "adapter.py prepare 失败", (err + out)[-500:])
 
+        # 2.5 clock freeze (P0-b, OpenFilm FILM_CLOCK 借鉴):
+        # 仅对命中时钟/随机风险的入口 HTML 注入时钟冻结 prelude；
+        # 单 canvas 纯函数模板自动跳过（apply_clock_freeze 内部判定）
+        if progress_cb:
+            progress_cb("prepare", 35, "时钟冻结检查...")
+        clock_frozen = []
+        try:
+            from .clock_freeze import apply_clock_freeze
+            clock_frozen = apply_clock_freeze(project_dir)
+        except Exception:
+            clock_frozen = []
+
         # 3. render (render.mjs -> mix.py handled by adapter.py render)
         if progress_cb:
             progress_cb("render", 60, "渲染视频...")
@@ -240,6 +252,7 @@ class StandardRenderEngine(RenderEngine):
             'elapsed_s': round(elapsed, 1),
             'format': 'standard',
             'project_dir': str(project_dir),
+            'clock_freeze': clock_frozen,
         }
 
 
