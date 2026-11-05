@@ -37,6 +37,15 @@ def cmd_render(args):
     template = args.template
     output = args.output or "output.mp4"
 
+    # Step 0: 渲染前置环境自检（node/ffmpeg/ffprobe/Chrome）
+    from core.doctor import render_preflight
+    allowed, preflight_lines = render_preflight(
+        skip=getattr(args, "skip_doctor", False))
+    for line in preflight_lines:
+        print(line, file=sys.stdout if allowed else sys.stderr)
+    if not allowed:
+        sys.exit(1)
+
     # Load params
     if args.params:
         params = _load_params(args.params)
@@ -337,6 +346,9 @@ def main():
     render_p.add_argument("--params", required=True, help="Path to params JSON file")
     render_p.add_argument("--output", "-o", help="Output MP4 path (default: output.mp4)")
     render_p.add_argument("--preview", action="store_true", help="Low-res preview mode")
+    render_p.add_argument(
+        "--skip-doctor", action="store_true",
+        help="Skip pre-render environment doctor check (default: run it)")
 
     # inspect
     inspect_p = subparsers.add_parser("inspect", help="Inspect a .motion template")

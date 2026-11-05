@@ -8,7 +8,7 @@ import os
 import shutil
 import subprocess
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from ..template_parser.strict import lint_template, strict_json_load
 
@@ -173,3 +173,36 @@ def run_doctor(template_dir: Optional[str] = None) -> DoctorReport:
     if template_dir:
         report.template_checks = check_template(template_dir)
     return report
+
+
+def render_preflight(skip: bool = False,
+                     template_dir: Optional[str] = None) -> Tuple[bool, List[str]]:
+    """渲染前置判定（配置指令 §4.4「渲染前跑 doctor」）。
+
+    返回 (allowed, lines)：
+    - `missing` 项 → allowed=False，调用方应中止渲染；
+    - `warn` 项 → allowed=True，仅提示；
+    - `skip=True` → 显式绕过，allowed=True 并留一行痕迹。
+
+    纯函数，不做 I/O 之外的副作用，便于单测。
+    """
+    lines: List[str] = []
+    if skip:
+        lines.append("⚠️  已跳过 doctor 前置自检（--skip-doctor）："
+                     "本次渲染未验证 node/ffmpeg/ffprobe/Chrome")
+        return True, lines
+
+    report = run_doctor(template_dir)
+    missing = [i for i in report.items if i.status == "missing"]
+    if missing:
+        lines.append("❌ doctor 前置自检未通过，渲染已中止：")
+        for item in missing:
+            suffix = f"（{item.command}）" if item.command else ""
+            lines.append(f"   - {item.name}: {item.detail}{suffix}")
+        lines.append("   如需强制继续：加 --skip-doctor（会在输出中留痕，但不校验环境）")
+        return False, lines
+
+    for item in [i for i in report.items if i.status == "warn"]:
+        lines.append(f"⚠️  doctor 提醒 [{item.name}]: {item.detail}")
+    lines.append("✅ doctor 前置自检通过（node / ffmpeg / ffprobe / Chrome）")
+    return True, lines
