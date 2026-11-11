@@ -8,6 +8,7 @@ from typing import Callable, Optional
 
 from ..template_parser import detect_format, parse_template
 from .engine import StandardRenderEngine, PersonalRenderEngine, RenderError
+from .embedded_adapter import EmbeddedAdapterEngine, has_embedded_adapter
 
 
 class RenderPipeline:
@@ -56,7 +57,12 @@ class RenderPipeline:
             if self.format == 'standard':
                 engine = StandardRenderEngine(str(self.template_path), str(instance_dir))
             elif self.format == 'personal-download-v1':
-                engine = PersonalRenderEngine(str(self.template_path), str(instance_dir))
+                # Packages with an embedded adapter contract bypass the helper's
+                # fixed dispatch chain and call their adapter directly.
+                if has_embedded_adapter(str(self.template_path)):
+                    engine = EmbeddedAdapterEngine(str(self.template_path), str(instance_dir))
+                else:
+                    engine = PersonalRenderEngine(str(self.template_path), str(instance_dir))
             else:
                 raise RenderError("env", f"不支持的模板格式: {self.format}")
 

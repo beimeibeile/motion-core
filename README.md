@@ -31,6 +31,10 @@ O.motion Core 是面向 `.motion` 开放动画模板格式的 Python 共享核�
 - **standard**：明文 JSON，阿杜早期个人项目规范
 - **personal-download-v1**：AES-256-GCM 加密，MotionGit 平台分发格式
 
+personal 包若在嵌套 release 内自带可执行 adapter（`src/adapter.py` 或 `src/adapter.mjs`），
+`RenderPipeline` 自动路由到 `EmbeddedAdapterEngine`：命令面从 adapter 真实 help 输出探测
+（三种通用 contract profile，无模板 id 硬编码），绕开 helper 固定 `check-params` 派发链。
+
 ## 安装
 
 ```bash
@@ -102,7 +106,7 @@ Motion-Core/
 │   ├── __init__.py
 │   ├── invoke.py             # 统一调用入口（能力注册中心兼容）
 │   ├── template_parser/      # 模板解析器（standard + personal）
-│   ├── renderer/             # 渲染引擎（Playwright + FFmpeg）
+│   ├── renderer/             # 渲染引擎（Playwright + FFmpeg，含 embedded_adapter 直连引擎）
 │   ├── quality_gate/         # 四层质量门
 │   ├── param_manager/        # 参数管理（Schema + 预设）
 │   ├── fragment_manager/     # 片段管理（库 + 提取 + 组合）
