@@ -89,12 +89,23 @@ def cmd_render(args):
 
     try:
         result = pipeline.render(params, output, progress_cb=progress)
-        print(f"✅ 渲染完成 ({result['elapsed_s']}s)")
     except RenderError as e:
         print(f"❌ 渲染失败 [{e.stage}]: {e.message}", file=sys.stderr)
         if e.detail:
             print(f"   详情: {e.detail[:300]}", file=sys.stderr)
         sys.exit(1)
+
+    # pipeline 把 RenderError/异常收敛为 success=False 的结果字典
+    if not result.get("success"):
+        print(
+            f"❌ 渲染失败 [{result.get('error_stage', 'unknown')}]: "
+            f"{result.get('error', '未知错误')}", file=sys.stderr)
+        detail = result.get("error_detail")
+        if detail:
+            print(f"   详情: {str(detail)[:300]}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"✅ 渲染完成 ({result.get('elapsed_s', '?')}s)")
 
     # Step 4: Quality gate
     gate = QualityGate()
