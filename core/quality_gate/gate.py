@@ -371,6 +371,167 @@ class QualityGate:
             r.duration_ms = int((time.time() - t0) * 1000)
         return results
 
+    # ── 导出硬验证（B-01）─────────────────────────────────────────
+    # 现有 4.x 检查只看"规格对不对"（ffprobe 元数据），不看"流能不能真解"。
+    # 这三项补上硬证据：容器头结构完整、全流可解码、代表帧可 seek 取出。
+
+    # 认为"可当 MP4/ISO-BMFF 处理"的首个 box 类型
+    MP4_HEAD_BOXES = {b"ftyp", b"moov", b"mdat", b"free", b"skip", b"wide"}
+    SEEK_POINTS = (0.1, 0.5, 0.9)   # 代表帧采样位置（按总时长比例）
+    SEEK_MIN_FRAME_BYTES = 512      # 一帧 PNG 小于此值视为没取到
+
+    @staticmethod
+    def _parse_mp4_boxes(path: str):
+        """解析顶层 box 链，返回 (boxes, error)。
+
+        boxes: [(type, offset, size)]；error 非空表示结构不可信（越界/非法）。
+        """
+        try:
+            total = Path(path).stat().st_size
+            boxes = []
+            with open(path, "rb") as fh:
+                offset = 0
+                while offset + 8 <= total:
+                    fh.seek(offset)
+                    header = fh.read(8)
+                    if len(header) < 8:
+                        return boxes, f"盒头读取不完整 @{offset}"
+                    size = int.from_bytes(header[0:4], "big")
+                    btype = header[4:8].decode("latin-1")
+                    if not btype.strip():
+                        return boxes, f"非法 box 类型 @{offset}"
+                    if size == 1:                    # 64 位 largesize
+                        large = fh.read(8)
+                        if len(large) < 8:
+                            return boxes, f"largesize 不完整 @{offset}"
+                        size = int.from_bytes(large, "big")
+                        if size < 16:
+                            return boxes, f"largesize 非法 @{offset}: {size}"
+                    elif size == 0:                  # 延伸到文件末尾
+                        size = total - offset
+                    elif size < 8:
+                        return boxes, f"box 尺寸非法 @{offset}: {size}"
+                    if offset + size > total:
+                        return boxes, (f"box {btype!r} 越界：声明 {size} 字节，"
+                                       f"文件只剩 {total - offset} 字节（疑似截断）")
+                    boxes.append((btype, offset, size))
+                    offset += size
+            return boxes, None
+        except Exception as exc:
+            return [], f"读取失败: {exc}"
+
+    def check_output_stream(self, output_path: str,
+                            expected: Optional[dict] = None
+                            ) -> list[CheckResult]:
+        """B-01 导出硬验证：容器头 / 全解码 / 代表帧 seek 三项。"""
+        results = []
+        expected = expected or {}
+        t0 = time.time()
+        path = Path(output_path)
+        if not path.exists() or path.stat().st_size == 0:
+            return [CheckResult("output", "container_header", CheckStatus.FAIL,
+                                "输出文件缺失或为空，无法验证流")]
+
+        # ① 容器头结构：先看首盒类型决定这是不是 ISO-BMFF，再解析盒链
+        try:
+            with open(output_path, "rb") as fh:
+                head = fh.read(8)
+        except Exception as exc:
+            return [CheckResult("output", "container_header", CheckStatus.FAIL,
+                               f"读取失败: {exc}")]
+        first_type = head[4:8] if len(head) >= 8 else b""
+        boxes, err = self._parse_mp4_boxes(output_path)
+        blocked = False
+        if first_type not in self.MP4_HEAD_BOXES:
+            blocked = True
+            results.append(CheckResult("output", "container_header", CheckStatus.WARN,
+                                       f"首盒 {first_type!r} 不是 ISO-BMFF，跳过容器头解析"))
+        else:
+            types = {b[0] for b in boxes}
+            if err:
+                blocked = True
+                results.append(CheckResult("output", "container_header",
+                                           CheckStatus.FAIL, err))
+            elif "moov" not in types or "mdat" not in types:
+                blocked = True
+                missing = "moov" if "moov" not in types else "mdat"
+                results.append(CheckResult("output", "container_header", CheckStatus.FAIL,
+                                           f"缺少必需的 {missing} box（顶层 {sorted(types)}）"))
+            else:
+                moov_off = next(b[1] for b in boxes if b[0] == "moov")
+                mdat_off = next(b[1] for b in boxes if b[0] == "mdat")
+                faststart = moov_off < mdat_off
+                msg = (f"box 链完整（{len(boxes)} 个，{path.stat().st_size} 字节）；"
+                       f"moov@{moov_off}，faststart={'是' if faststart else '否'}")
+                if expected.get("require_faststart") and not faststart:
+                    results.append(CheckResult("output", "container_header",
+                                               CheckStatus.FAIL,
+                                               msg + "；要求 faststart 但 moov 在 mdat 之后"))
+                else:
+                    results.append(CheckResult("output", "container_header",
+                                               CheckStatus.PASS, msg))
+
+        # 容器结构不可信时不继续解码/取帧（避免在坏文件上白跑）
+        if blocked:
+            for r in results:
+                r.duration_ms = int((time.time() - t0) * 1000)
+            return results
+
+        # ② 全解码：所有流解一遍，任何 error 级输出即判坏流
+        try:
+            proc = subprocess.run(
+                ["ffmpeg", "-v", "error", "-i", output_path,
+                 "-map", "0", "-f", "null", "-"],
+                capture_output=True, timeout=300)
+            stderr = proc.stderr.decode("utf-8", errors="replace").strip()
+            if proc.returncode != 0 or stderr:
+                detail = (stderr or f"退出码 {proc.returncode}").replace("\n", " ")
+                results.append(CheckResult("output", "full_decode", CheckStatus.FAIL,
+                                           f"解码报错：{detail[:300]}"))
+            else:
+                results.append(CheckResult("output", "full_decode", CheckStatus.PASS,
+                                           "全流解码零错误"))
+        except Exception as exc:
+            results.append(CheckResult("output", "full_decode", CheckStatus.FAIL,
+                                       f"解码执行失败: {exc}"))
+
+        # ③ 代表帧 seek：按比例取点，各取一帧，取不到即判 FAIL
+        probe = _ffprobe(output_path)
+        duration = float((probe or {}).get("format", {}).get("duration", 0) or 0)
+        if duration <= 0:
+            results.append(CheckResult("output", "seek_frames", CheckStatus.WARN,
+                                       "拿不到时长，跳过代表帧 seek"))
+        else:
+            ok, bad, detail = 0, [], []
+            for frac in self.SEEK_POINTS:
+                t = duration * frac
+                try:
+                    proc = subprocess.run(
+                        ["ffmpeg", "-v", "error", "-ss", f"{t:.3f}",
+                         "-i", output_path, "-frames:v", "1",
+                         "-f", "image2pipe", "-vcodec", "png", "-"],
+                        capture_output=True, timeout=120)
+                    got = len(proc.stdout)
+                    if proc.returncode == 0 and got >= self.SEEK_MIN_FRAME_BYTES:
+                        ok += 1
+                        detail.append(f"{t:.2f}s:{got}B")
+                    else:
+                        bad.append(f"{t:.2f}s")
+                except Exception:
+                    bad.append(f"{t:.2f}s")
+            if bad:
+                results.append(CheckResult("output", "seek_frames", CheckStatus.FAIL,
+                                           f"代表帧取不到：{', '.join(bad)}"
+                                           f"（成功 {ok}/{len(self.SEEK_POINTS)}）"))
+            else:
+                results.append(CheckResult("output", "seek_frames", CheckStatus.PASS,
+                                           f"{ok}/{len(self.SEEK_POINTS)} 点取帧成功："
+                                           + " / ".join(detail)))
+
+        for r in results:
+            r.duration_ms = int((time.time() - t0) * 1000)
+        return results
+
     # ── Determinism (P1, OpenFilm look 借鉴) ─────────────────────
 
     # 确定性风险源码模式（命中说明模板依赖真实时钟/未播种随机，
@@ -857,6 +1018,7 @@ class QualityGate:
         # Layer 4: only if output_path provided
         if output_path is not None:
             all_checks.extend(self.check_output(output_path, expected))
+            all_checks.extend(self.check_output_stream(output_path, expected))
             all_checks.extend(self.check_output_frames(output_path))
             all_checks.extend(self.check_output_audio(output_path))
 

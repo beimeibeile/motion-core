@@ -473,9 +473,9 @@ class TestCombinedGate:
         assert report.summary["failed"] == 0
 
     def test_full_25_25_equivalent(self, standard_tpl, tmp_path, monkeypatch):
-        """Core regression: standard template full gate == 25/25 PASS
+        """Core regression: standard template full gate == 28/28 PASS
         (static 4 + params 6 + determinism 2 + render 3 + output 6
-         + frames 2 + audio 2)."""
+         + stream 3 + frames 2 + audio 2)."""
         def fake_probe(p):
             return {
                 "streams": [{"codec_type": "video", "codec_name": "h264",
@@ -484,6 +484,14 @@ class TestCombinedGate:
                 "format": {"duration": "5.0"},
             }
         monkeypatch.setattr("core.quality_gate.gate._ffprobe", fake_probe)
+        # B-01 三项在 TestOutputStreamHardVerify 单验；此处只验流水线挂载
+        monkeypatch.setattr(
+            "core.quality_gate.gate.QualityGate.check_output_stream",
+            lambda self, p, e=None: [
+                CheckResult("output", "container_header", CheckStatus.PASS, "box ok"),
+                CheckResult("output", "full_decode", CheckStatus.PASS, "decode ok"),
+                CheckResult("output", "seek_frames", CheckStatus.PASS, "seek ok"),
+            ])
         # 确定性画面：有内容、随时间变化
         monkeypatch.setattr(
             "core.quality_gate.gate.QualityGate._ffmpeg_extract_frames",
@@ -521,8 +529,143 @@ class TestCombinedGate:
             expected={"width": 1920, "height": 1080, "duration": 5.0,
                       "require_audio": True})
         # static 4 + params 6 + determinism 2 + render 3 + output 6
-        #   + frames 2 + audio 2 = 25
-        assert report.summary["total"] == 25
-        assert report.summary["passed"] == 25
+        #   + stream 3 + frames 2 + audio 2 = 28
+        assert report.summary["total"] == 28
+        assert report.summary["passed"] == 28
         assert report.summary["failed"] == 0
         assert report.status == CheckStatus.PASS
+
+
+# ── B-01 导出硬验证（容器头 / 全解码 / 代表帧 seek）──────────────
+
+def _box(btype: bytes, payload: bytes = b"") -> bytes:
+    return (8 + len(payload)).to_bytes(4, "big") + btype + payload
+
+
+def _fake_mp4(moov_first: bool = True, truncate: bool = False) -> bytes:
+    """构造最小 ISO-BMFF 盒链：ftyp + moov + mdat（可调顺序/可截断）。"""
+    ftyp = _box(b"ftyp", b"isom" + b"\x00\x00\x02\x00" + b"isomiso2avc1mp41")
+    moov = _box(b"moov", b"\x00" * 40)
+    mdat = _box(b"mdat", b"\xff" * 200)
+    data = b"".join([ftyp, moov, mdat] if moov_first else [ftyp, mdat, moov])
+    return data[:-60] if truncate else data
+
+
+class FakeStreamProc:
+    """subprocess.run 替身：按是否带 -ss 区分"取帧"与"全解码"。"""
+
+    def __init__(self, decode_rc=0, decode_err=b"", frame_bytes=b"x" * 1000):
+        self.returncode = decode_rc
+        self.stdout = b""
+        self.stderr = decode_err
+        self._frame = frame_bytes
+
+    def __call__(self, cmd, **kwargs):
+        proc = FakeStreamProc.__new__(FakeStreamProc)
+        proc.returncode = 0
+        proc.stderr = b""
+        proc.stdout = self._frame if "-ss" in cmd else b""
+        if "-ss" not in cmd:
+            proc.returncode = self.returncode
+            proc.stderr = self.stderr
+        return proc
+
+
+@pytest.fixture
+def mp4_for_gate():
+    def _make(tmp_path, **kwargs):
+        f = tmp_path / "out.mp4"
+        f.write_bytes(_fake_mp4(**kwargs))
+        return f
+    return _make
+
+
+class TestOutputStreamHardVerify:
+    """B-01：导出硬验证三项——不看规格，只看"流能不能真解"。"""
+
+    def _patch_probe(self, monkeypatch, duration="5.0"):
+        monkeypatch.setattr(
+            "core.quality_gate.gate._ffprobe",
+            lambda p: {"streams": [{"codec_type": "video", "codec_name": "h264",
+                                    "width": 1920, "height": 1080}],
+                       "format": {"duration": duration}})
+
+    def test_container_faststart_pass(self, tmp_path, mp4_for_gate, monkeypatch):
+        self._patch_probe(monkeypatch)
+        monkeypatch.setattr("core.quality_gate.gate.subprocess.run", FakeStreamProc())
+        f = mp4_for_gate(tmp_path)
+        results = QualityGate().check_output_stream(str(f))
+        names = {c.name: c for c in results}
+        assert set(names) == {"container_header", "full_decode", "seek_frames"}
+        assert names["container_header"].status == CheckStatus.PASS
+        assert "faststart=是" in names["container_header"].message
+        assert names["full_decode"].status == CheckStatus.PASS
+        assert names["seek_frames"].status == CheckStatus.PASS
+        assert "3/3" in names["seek_frames"].message
+
+    def test_slow_start_fails_only_when_required(self, tmp_path, mp4_for_gate,
+                                                 monkeypatch):
+        self._patch_probe(monkeypatch)
+        monkeypatch.setattr("core.quality_gate.gate.subprocess.run", FakeStreamProc())
+        f = mp4_for_gate(tmp_path, moov_first=False)
+        ok = QualityGate().check_output_stream(str(f))
+        assert any(c.name == "container_header" and c.status == CheckStatus.PASS
+                   for c in ok)
+        bad = QualityGate().check_output_stream(str(f), {"require_faststart": True})
+        assert any(c.name == "container_header" and c.status == CheckStatus.FAIL
+                   for c in bad)
+
+    def test_truncated_file_detected(self, tmp_path, mp4_for_gate, monkeypatch):
+        self._patch_probe(monkeypatch)
+        f = mp4_for_gate(tmp_path, truncate=True)
+        results = QualityGate().check_output_stream(str(f))
+        assert len(results) == 1                      # 结构不可信 → 不再解码
+        assert results[0].name == "container_header"
+        assert results[0].status == CheckStatus.FAIL
+        assert "截断" in results[0].message
+
+    def test_missing_moov_detected(self, tmp_path, monkeypatch):
+        f = tmp_path / "nomoov.mp4"
+        f.write_bytes(_box(b"ftyp", b"isom") + _box(b"mdat", b"\xff" * 100))
+        results = QualityGate().check_output_stream(str(f))
+        assert results[0].status == CheckStatus.FAIL
+        assert "moov" in results[0].message
+
+    def test_non_mp4_skips_with_warn(self, tmp_path):
+        f = tmp_path / "pic.png"
+        f.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 64)
+        results = QualityGate().check_output_stream(str(f))
+        assert len(results) == 1
+        assert results[0].status == CheckStatus.WARN
+        assert "跳过容器头解析" in results[0].message
+
+    def test_full_decode_reports_ffmpeg_error(self, tmp_path, mp4_for_gate,
+                                              monkeypatch):
+        self._patch_probe(monkeypatch)
+        monkeypatch.setattr("core.quality_gate.gate.subprocess.run",
+                            FakeStreamProc(decode_rc=1,
+                                           decode_err=b"Invalid data found\n"))
+        f = mp4_for_gate(tmp_path)
+        results = QualityGate().check_output_stream(str(f))
+        named = next(c for c in results if c.name == "full_decode")
+        assert named.status == CheckStatus.FAIL
+        assert "Invalid data found" in named.message
+
+    def test_seek_frames_fail_when_frame_empty(self, tmp_path, mp4_for_gate,
+                                               monkeypatch):
+        self._patch_probe(monkeypatch)
+        monkeypatch.setattr("core.quality_gate.gate.subprocess.run",
+                            FakeStreamProc(frame_bytes=b""))
+        f = mp4_for_gate(tmp_path)
+        results = QualityGate().check_output_stream(str(f))
+        named = next(c for c in results if c.name == "seek_frames")
+        assert named.status == CheckStatus.FAIL
+        assert "代表帧取不到" in named.message
+
+    def test_seek_skipped_without_duration(self, tmp_path, mp4_for_gate, monkeypatch):
+        self._patch_probe(monkeypatch, duration="0")
+        monkeypatch.setattr("core.quality_gate.gate.subprocess.run", FakeStreamProc())
+        f = mp4_for_gate(tmp_path)
+        results = QualityGate().check_output_stream(str(f))
+        named = next(c for c in results if c.name == "seek_frames")
+        assert named.status == CheckStatus.WARN
