@@ -387,6 +387,8 @@ class QualityGate:
     # OpenFilm SAME_LIMIT 对应容差（0-255 尺度，先按开源默认标定）
     FLAT_FRAME_VARIANCE = 6.0
     STATIC_FRAME_MAD = 2.0      # 帧间平均绝对差 < 2.0 视为"整片静止"
+    STATIC_FRAME_PIXEL_DIFF = 1.5  # 逐像素平均差（同位置取样）< 1.5 视为"无空间变化"
+    STATIC_FRAME_BLOCK_DIFF = 4.0  # 分块最大平均差 < 4.0 视为"无局部变化"（片段类主判据）
     AUDIO_PEAK_MIN_DB = -30.0   # 峰值低于 -30dB 视为太小声
 
     def _extract_scripts_from_zip(self, template_path: str) -> str:
@@ -631,6 +633,59 @@ class QualityGate:
         var = sum((v - mean) ** 2 for v in samples) / count
         return {"mean": mean, "variance": var}
 
+    @staticmethod
+    def _frame_pixel_diff(a: bytes, b: bytes, stride: int = 16) -> float:
+        """同位置抽样像素的平均绝对差（0-255 尺度）。
+
+        与 Δmean 的区别：Δmean 只是全局亮度的变化，透明底/纯色底片段里
+        主体移动几乎不改变全局均值；逐像素差能反映空间上的位移与显隐。
+        """
+        if not a or not b:
+            return 0.0
+        n = min(len(a), len(b))
+        samples_a = a[:n:stride]
+        samples_b = b[:n:stride]
+        if not samples_a:
+            return 0.0
+        total = 0
+        for va, vb in zip(samples_a, samples_b):
+            total += abs(va - vb)
+        return total / len(samples_a)
+
+    @staticmethod
+    def _frame_block_diff(a: bytes, b: bytes, width: int, height: int,
+                          grid: tuple[int, int] = (16, 9),
+                          stride: int = 16) -> float:
+        """分块比较：返回"最活跃块"的平均绝对差（0-255 尺度）。
+
+        片段类模板（整屏透明/纯色底、主体只占很小面积）用全局均值 Δmean
+        判"是否有动效"会一直误报；按 16×9 网格分块后取最大块差值，
+        能捕捉"局部主体在动"，同时不被大面积静背景稀释。
+        """
+        if not a or not b or width <= 0 or height <= 0:
+            return 0.0
+        cols, rows = grid
+        n = min(len(a), len(b))
+        frame_bytes = width * height * 3
+        if n < frame_bytes:
+            return 0.0
+        sums = [0] * (cols * rows)
+        counts = [0] * (cols * rows)
+        px = frame_bytes // stride * stride  # 按 stride 网格取样
+        for base in range(0, px, stride * 3):
+            for c in range(3):
+                idx = base + c
+                if idx >= n:
+                    break
+                pixel = base // 3
+                y = pixel // width
+                x = pixel % width
+                blk = min(rows - 1, y * rows // height) * cols + min(cols - 1, x * cols // width)
+                sums[blk] += abs(a[idx] - b[idx])
+                counts[blk] += 1
+        diffs = [sums[i] / counts[i] for i in range(len(sums)) if counts[i]]
+        return max(diffs) if diffs else 0.0
+
     def check_output_frames(self, output_path: str,
                             n: int = 12) -> list[CheckResult]:
         """输出级画面确定性检查（渲染后，ffmpeg 抽帧）：
@@ -659,16 +714,26 @@ class QualityGate:
             results.append(CheckResult("output", "flat_frame", CheckStatus.PASS,
                                        f"{n} 帧方差均 ≥ {self.FLAT_FRAME_VARIANCE:.0f}"))
 
-        # 整片静止：所有帧与首帧的平均绝对差 < 容差
+        # 整片静止：全局亮度 Δmean 与逐像素 Δpx 两个口径都低才算"无动效"。
+        # 片段类模板（整屏透明/纯色底、主体面积小）Δmean 天然接近 0，
+        # 只看 Δmean 会误报，故以逐像素差作为第二判据（任一达标即 PASS）。
         first = stats[0]
         mad = max(abs(s["mean"] - first["mean"]) for s in stats[1:]) if len(stats) > 1 else 0.0
-        if mad < self.STATIC_FRAME_MAD:
+        w, h = meta.get("width", 0), meta.get("height", 0)
+        px_diff = (max(self._frame_pixel_diff(frames[0], f) for f in frames[1:])
+                   if len(frames) > 1 else 0.0)
+        blk_diff = (max(self._frame_block_diff(frames[0], f, w, h) for f in frames[1:])
+                    if len(frames) > 1 else 0.0)
+        if (mad < self.STATIC_FRAME_MAD and px_diff < self.STATIC_FRAME_PIXEL_DIFF
+                and blk_diff < self.STATIC_FRAME_BLOCK_DIFF):
             results.append(CheckResult("output", "frame_static", CheckStatus.WARN,
-                                       f"采样帧画面几乎无变化 (Δmean={mad:.2f})，"
+                                       f"采样帧画面几乎无变化 (Δmean={mad:.2f}, "
+                                       f"Δpx={px_diff:.2f}, Δblk={blk_diff:.2f})，"
                                        "模板可能没有随时间变化的动效"))
         else:
             results.append(CheckResult("output", "frame_static", CheckStatus.PASS,
-                                       f"画面随时间变化正常 (Δmean={mad:.2f})"))
+                                       f"画面随时间变化正常 (Δmean={mad:.2f}, "
+                                       f"Δpx={px_diff:.2f}, Δblk={blk_diff:.2f})"))
 
         for r in results:
             r.duration_ms = int((time.time() - t0) * 1000)

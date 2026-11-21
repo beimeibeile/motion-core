@@ -295,6 +295,48 @@ class TestOutputFrameChecks:
         results = QualityGate().check_output_frames(str(f))
         assert all(c.status == CheckStatus.PASS for c in results)
 
+    @staticmethod
+    def _fragment_like_frames(width=320, height=180, n=12, backdrop=128,
+                              patch=40, step=24):
+        """片段类模板仿真：大面积纯色底 + 小面积主体在横向移动。
+
+        全局亮度 Δmean 几乎不变（白块总数恒定），逐像素平均差也被大背景稀释，
+        只有"最活跃块"的分块差能反映主体在动 —— 这是 2026-11-21 用真实
+        水墨片段成片（Δmean=0.10 / Δpx=0.26 / Δblk=7.55）标定的场景。
+        """
+        fb = width * height * 3
+
+        def frame(offset):
+            buf = bytearray([backdrop]) * fb
+            for y in range(40, 40 + patch // 2):
+                for x in range(offset, min(width, offset + patch)):
+                    for c in range(3):
+                        buf[(y * width + x) * 3 + c] = 255
+            return bytes(buf)
+
+        # 白块沿横向移动；每块 20px 高，保证落在分块网格内
+        frames = [frame(20 + i * step) for i in range(n)]
+        return frames, {"width": width, "height": height, "duration": 10.0}
+
+    def test_fragment_like_moving_passes(self, tmp_path, monkeypatch):
+        """片段类：局部主体移动、全局亮度不变 → 不得判"整片静止"。"""
+        monkeypatch.setattr(
+            "core.quality_gate.gate.QualityGate._ffmpeg_extract_frames",
+            lambda self, p, n=12: TestOutputFrameChecks._fragment_like_frames())
+        f = tmp_path / "frag.mp4"
+        f.write_bytes(b"x")
+        results = QualityGate().check_output_frames(str(f))
+        assert any(c.name == "frame_static" and c.status == CheckStatus.PASS
+                   for c in results)
+
+    def test_block_diff_ignores_static_backdrop(self):
+        """分块差分：整幅静止 → 0 附近；小块移动 → 明显大于阈值。"""
+        frames, meta = self._fragment_like_frames(n=2, step=60)
+        a, b = frames
+        diff = QualityGate._frame_block_diff(a, b, meta["width"], meta["height"])
+        assert diff > QualityGate.STATIC_FRAME_BLOCK_DIFF
+        assert QualityGate._frame_block_diff(a, a, meta["width"], meta["height"]) == 0.0
+
     def test_extract_failure_warns(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
             "core.quality_gate.gate.QualityGate._ffmpeg_extract_frames",
