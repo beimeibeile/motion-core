@@ -71,10 +71,13 @@ def make_standard_zip(path: Path, *, scenes_max: int = 30,
     return path
 
 
-def make_personal_zip(path: Path, *, runtime: str = "v2") -> Path:
+def make_personal_zip(path: Path, *, runtime: str = "v2",
+                      schema_required: list | None = None) -> Path:
     """Create a minimal personal-download-v1 .motion ZIP.
 
     runtime: 'v1' (motion-kit) or 'v2' (split_root) marker in motion.mjs.
+    schema_required: when given, also ship params.schema.json declaring these
+        required fields (the contract the quality gate must follow).
     """
     motion = {
         "specVersion": "1.0.0-rc.1",
@@ -100,6 +103,13 @@ def make_personal_zip(path: Path, *, runtime: str = "v2") -> Path:
         z.writestr("assistant/guide.json",
                    json.dumps({"template": {"id": "test-personal", "version": "2.7.10",
                                             "width": 1920, "height": 1080}}))
+        if schema_required is not None:
+            z.writestr("params.schema.json", json.dumps({
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "required": schema_required,
+                "properties": {name: {"type": "object"} for name in schema_required},
+            }))
     path.write_bytes(buf.getvalue())
     return path
 

@@ -18,6 +18,39 @@ from typing import Optional
 from ..template_parser import detect_format, parse_template
 
 
+def _read_params_schema(template_path: str) -> Optional[dict]:
+    """Read a package's declared params.schema.json (outer or nested content).
+
+    Returns None when the contract cannot be read; callers must not invent a
+    requirement in that case.
+    """
+    path = Path(template_path)
+    try:
+        if path.is_dir():
+            for cand in (path / "params.schema.json",):
+                if cand.is_file():
+                    return json.loads(cand.read_text(encoding="utf-8"))
+            return None
+        import zipfile
+        with zipfile.ZipFile(path) as outer:
+            if "params.schema.json" in outer.namelist():
+                return json.loads(outer.read("params.schema.json").decode("utf-8"))
+            rel = next((n for n in outer.namelist() if n.endswith("release.bin")), None)
+            if rel is None:
+                return None
+            payload = outer.read(rel)
+            if payload[:4] != b"PK\x03\x04":
+                return None
+            import io
+            with zipfile.ZipFile(io.BytesIO(payload)) as inner:
+                if "params.schema.json" not in inner.namelist():
+                    return None
+                return json.loads(inner.read("params.schema.json").decode("utf-8"))
+    except Exception:
+        return None
+
+
+
 class CheckStatus(Enum):
     PASS = "pass"
     WARN = "warn"
@@ -187,11 +220,20 @@ class QualityGate:
                                            f"{len(scenes)} 个场景"))
 
         elif fmt == "personal-download-v1":
-            # personal format requires timeline
-            if "timeline" not in params:
-                results.append(CheckResult("params", "required_timeline", CheckStatus.FAIL,
-                                           "personal 格式缺少必填字段: timeline"))
-            else:
+            # personal 包的参数契约以包内 params.schema.json 为准：
+            # 只有声明了 timeline 的模板才要求 timeline（默认 html-canvas 档为
+            # 片段类参数契约，不含 timeline，不应被判缺失）。
+            schema = _read_params_schema(template_path)
+            required = schema.get("required", []) if isinstance(schema, dict) else []
+            for field_name in required:
+                if field_name in params:
+                    results.append(CheckResult("params", f"required_{field_name}",
+                                               CheckStatus.PASS))
+                else:
+                    results.append(CheckResult("params", f"required_{field_name}",
+                                               CheckStatus.FAIL,
+                                               f"schema 必填字段缺失: {field_name}"))
+            if "timeline" in params:
                 results.append(CheckResult("params", "required_timeline", CheckStatus.PASS))
                 tl = params["timeline"]
                 if "segments" not in tl or not isinstance(tl.get("segments"), list):
@@ -200,6 +242,10 @@ class QualityGate:
                 else:
                     results.append(CheckResult("params", "timeline_segments", CheckStatus.PASS,
                                                f"{len(tl['segments'])} 个片段"))
+            elif schema is None:
+                # 读不到契约时不做臆断，只记录一条提示
+                results.append(CheckResult("params", "schema_unreadable", CheckStatus.WARN,
+                                           "包内 params.schema.json 不可读，按参数原样放行"))
 
         for r in results:
             r.duration_ms = int((time.time() - t0) * 1000)
@@ -362,6 +408,14 @@ class QualityGate:
             low = path.name.lower()
             if not low.endswith(wanted):
                 return
+            # 平台/工具自带运行时（assistant helper、模板共用 _render 基座）
+            # 不是作者源码，扫它们只会产生假阳性。
+            posix = path.as_posix().lower()
+            if any(seg in posix for seg in ("/assistant/", "/_render/",
+                                            "/node_modules/", "/__pycache__/")):
+                return
+            if low == "motion.mjs":
+                return
             if any(seg in low for seg in ("node_modules", "__pycache__")):
                 return
             try:
@@ -384,7 +438,10 @@ class QualityGate:
                     low = name.lower()
                     if not low.endswith(wanted):
                         continue
-                    if any(seg in low for seg in ("/node_modules/", "/__pycache__/")):
+                    if any(seg in low for seg in ("assistant/", "_render/",
+                                                  "node_modules/", "__pycache__/")):
+                        continue
+                    if low.endswith("motion.mjs"):
                         continue
                     try:
                         data = z.read(name)
@@ -394,6 +451,30 @@ class QualityGate:
                                       + data.decode("utf-8", errors="replace"))
                     except Exception:
                         continue
+                # 个人化包：源码在嵌套 content/release.bin 里，外扫不到时下沉一层
+                rel = next((n for n in z.namelist() if n.endswith("release.bin")), None)
+                if not chunks and rel:
+                    payload = z.read(rel)
+                    if payload[:4] == b"PK\x03\x04":
+                        import io as _io
+                        with zipfile.ZipFile(_io.BytesIO(payload)) as inner:
+                            for name in inner.namelist():
+                                low = name.lower()
+                                if not low.endswith(wanted):
+                                    continue
+                                if any(seg in low for seg in ("assistant/", "_render/",
+                                                              "node_modules/", "__pycache__/")):
+                                    continue
+                                if low.endswith("motion.mjs"):
+                                    continue
+                                try:
+                                    data = inner.read(name)
+                                    if len(data) > 1_000_000:
+                                        data = data[:1_000_000]
+                                    chunks.append(f"=== {name} ===\n"
+                                                  + data.decode("utf-8", errors="replace"))
+                                except Exception:
+                                    continue
         except Exception:
             return ""
         return "\n".join(chunks)
@@ -620,14 +701,16 @@ class QualityGate:
         mean_db = max_db = None
         for line in text.splitlines():
             line = line.strip()
-            if line.startswith("mean_volume:"):
+            # ffmpeg 把统计打在带前缀的日志行里，如
+            # "[Parsed_volumedetect_0 @ 0x...] mean_volume: -32.0 dB"
+            if "mean_volume:" in line:
                 try:
-                    mean_db = float(line.split(":")[1].strip().split()[0])
+                    mean_db = float(line.split("mean_volume:")[1].strip().split()[0])
                 except Exception:
                     pass
-            elif line.startswith("max_volume:"):
+            elif "max_volume:" in line:
                 try:
-                    max_db = float(line.split(":")[1].strip().split()[0])
+                    max_db = float(line.split("max_volume:")[1].strip().split()[0])
                 except Exception:
                     pass
 
@@ -645,8 +728,21 @@ class QualityGate:
         try:
             import soundfile as sf
             import pyloudnorm as pyln
-            import numpy as _np
-            data, rate = sf.read(output_path, dtype="float32")
+            import tempfile
+            data = rate = None
+            # libsndfile 读不了 mp4/aac：先 ffmpeg 解成 48k 单声道 wav 再算
+            with tempfile.TemporaryDirectory() as tmp:
+                wav = Path(tmp) / "audio.wav"
+                dec = subprocess.run(
+                    ["ffmpeg", "-y", "-v", "error", "-i", output_path,
+                     "-vn", "-ac", "1", "-ar", "48000", str(wav)],
+                    capture_output=True, timeout=180,
+                )
+                if dec.returncode == 0 and wav.is_file():
+                    data, rate = sf.read(str(wav), dtype="float32")
+            if data is None:
+                # 解码不可用时退回直读（wav 等 libsndfile 原生支持的容器）
+                data, rate = sf.read(output_path, dtype="float32")
             meter = pyln.Meter(rate)
             lufs = meter.integrated_loudness(data)
             results.append(CheckResult("output", "loudness_lufs", CheckStatus.PASS,

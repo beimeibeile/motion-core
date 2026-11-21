@@ -30,25 +30,42 @@ from .engine import RenderEngine, RenderError
 PY_POSITIONAL = "py-positional"
 PY_OP_FLAGS = "py-op-flags"
 MJS_INSTANCE = "mjs-instance"
+# Template-shipped fragment renderer (_render/render.mjs): --template/--data/--out
+MJS_FRAGMENT = "mjs-fragment"
+
+FRAGMENT_RENDERER = "_render/render.mjs"
 
 
-def has_embedded_adapter(template_path: str) -> bool:
-    """True if the package's nested release contains src/adapter.{py,mjs}."""
+def _release_listing(template_path: str) -> Optional[list[str]]:
+    """Return the nested release.bin entry list, or None when unreadable."""
     path = Path(template_path)
     if not path.is_file():
-        return False
+        return None
     try:
         with zipfile.ZipFile(path) as outer:
             rel = next((n for n in outer.namelist() if n.endswith("release.bin")), None)
             if rel is None:
-                return False
+                return None
             payload = outer.read(rel)
             if payload[:4] != b"PK\x03\x04":
-                return False
+                return None
             with zipfile.ZipFile(__import__("io").BytesIO(payload)) as inner:
-                return any(n.startswith("src/adapter.") for n in inner.namelist())
+                return inner.namelist()
     except Exception:
+        return None
+
+
+def has_embedded_adapter(template_path: str) -> bool:
+    """True if the nested release carries its own runnable renderer.
+
+    Two shapes are supported: `src/adapter.{py,mjs}` (adapter contracts) and
+    `_render/render.mjs` (template-shipped fragment renderer, the runtime
+    extension the platform's default html-canvas chain does not replace).
+    """
+    names = _release_listing(template_path)
+    if names is None:
         return False
+    return any(n.startswith("src/adapter.") for n in names) or FRAGMENT_RENDERER in names
 
 
 def find_playwright_module(explicit: Optional[str] = None) -> Optional[str]:
@@ -95,7 +112,14 @@ def detect_contract(bundle_dir: Path) -> tuple[str, Path]:
             raise RenderError("env", "adapter.mjs 未声明 --instance，不在已知契约内")
         return MJS_INSTANCE, mjs_adapter
 
-    raise RenderError("env", "嵌套内容中未找到 src/adapter.py 或 src/adapter.mjs")
+    fragment = bundle_dir / FRAGMENT_RENDERER
+    if fragment.is_file():
+        source = fragment.read_text(encoding="utf-8", errors="replace")
+        if "--template" in source and "--data" in source and "--out" in source:
+            return MJS_FRAGMENT, fragment
+        raise RenderError("env", "_render/render.mjs 未声明 --template/--data/--out，不在已知契约内")
+
+    raise RenderError("env", "嵌套内容中未找到 src/adapter.py、src/adapter.mjs 或 _render/render.mjs")
 
 
 def _probe_help(argv: list, cwd: Path) -> tuple[int, str, str]:
@@ -162,6 +186,8 @@ class EmbeddedAdapterEngine(RenderEngine):
             produced = self._run_py_positional(params_file, pw, progress_cb)
         elif self.contract == PY_OP_FLAGS:
             produced = self._run_py_op_flags(params_file, pw, progress_cb)
+        elif self.contract == MJS_FRAGMENT:
+            produced = self._run_mjs_fragment(params_file, progress_cb)
         else:
             produced = self._run_mjs_instance(params_file, progress_cb)
 
@@ -253,6 +279,48 @@ class EmbeddedAdapterEngine(RenderEngine):
                 self.bundle_dir, timeout=timeout,
             )
         return embed / "video.mp4"
+
+    def _run_mjs_fragment(self, params_file: Path,
+                          progress_cb: Callable) -> Path:
+        """Drive the template-shipped fragment renderer (_render/render.mjs).
+
+        This renderer is the template runtime extension (transparent/chroma base,
+        CDP frame capture, anchor-aligned SFX). It is independent of the platform
+        helper's default canvas chain, so it is used as-is instead of being
+        downgraded to that chain's argument shape.
+        """
+        out_dir = self.instance_dir / "fragment_out"
+        if out_dir.exists():
+            shutil.rmtree(out_dir)
+        out_dir.mkdir(parents=True)
+        # render.mjs treats --out as a filename BASE and appends suffixes
+        # (_green_key.mp4 / _transparent_prores4444.mov / _transparent_vp9.webm).
+        out_base = out_dir / "video"
+        entry = "src/index.html"
+        codec = os.environ.get("O_MOTION_FRAGMENT_CODEC", "h264")
+        bg = os.environ.get("O_MOTION_FRAGMENT_BG", "transparent")
+        # 模板自带的锚点音效表（assets/sfx/*.json）：有则照用，不替作者删音效
+        sfx = None
+        sfx_dir = self.bundle_dir / "assets" / "sfx"
+        if sfx_dir.is_dir():
+            candidates = sorted(sfx_dir.glob("*.json"))
+            sfx = candidates[0] if candidates else None
+        if progress_cb:
+            progress_cb("render", 60, "模板内置渲染器出片...")
+        argv = ["node", str(self.adapter),
+                "--template", str(self.bundle_dir / entry),
+                "--data", str(params_file),
+                "--out", str(out_base),
+                "--bg", bg,
+                "--codec", codec]
+        if sfx is not None:
+            argv += ["--sfx", str(sfx)]
+        self._checked("render", argv, self.bundle_dir, timeout=1800)
+        for pattern in ("*.mp4", "*.mov", "*.webm"):
+            found = sorted(out_dir.rglob(pattern))
+            if found:
+                return found[0]
+        raise RenderError("render", "模板内置渲染器未产出成品", str(out_dir))
 
     def _checked(self, stage: str, argv: list, cwd: Path,
                  timeout: int = 600) -> None:

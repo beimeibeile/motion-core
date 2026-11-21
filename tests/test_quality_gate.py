@@ -11,7 +11,7 @@ import pytest
 from core.quality_gate.gate import (
     QualityGate, QualityReport, CheckResult, CheckStatus, _ffprobe,
 )
-from conftest import standard_params
+from conftest import standard_params, make_personal_zip
 
 
 class TestQualityReport:
@@ -89,15 +89,26 @@ class TestParamsLayer:
         assert any(c.name == "scenes_limit" and c.status == CheckStatus.WARN
                    for c in results)
 
-    def test_personal_missing_timeline(self, personal_tpl_v2):
+    def test_personal_schema_unreadable_warns(self, personal_tpl_v2):
+        """契约不可读时不臆断必填项，只提示（旧实现硬编码 timeline 属误判）。"""
         results = QualityGate().check_params(str(personal_tpl_v2), {"x": 1})
+        assert not any(c.name == "required_timeline" and c.status == CheckStatus.FAIL
+                       for c in results)
+        assert any(c.name == "schema_unreadable" and c.status == CheckStatus.WARN
+                   for c in results)
+
+    def test_personal_timeline_required_by_schema(self, tmp_path):
+        """包内 schema 真的声明了 timeline 时才判缺失。"""
+        tpl = make_personal_zip(tmp_path / "test_personal_tl.motion",
+                                schema_required=["timeline"])
+        results = QualityGate().check_params(str(tpl), {"x": 1})
         assert any(c.name == "required_timeline" and c.status == CheckStatus.FAIL
                    for c in results)
 
     def test_personal_valid_timeline(self, personal_tpl_v2):
         results = QualityGate().check_params(
             str(personal_tpl_v2), {"timeline": {"segments": [{"id": "s1"}]}})
-        assert all(c.status == CheckStatus.PASS for c in results)
+        assert all(c.status != CheckStatus.FAIL for c in results)
 
 
 class TestRenderLayer:
